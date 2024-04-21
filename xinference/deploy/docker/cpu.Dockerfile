@@ -66,5 +66,5 @@ RUN python -m pip install --upgrade -i "$PIP_INDEX" pip && \
     pip install -i "$PIP_INDEX" "llama-cpp-python>=0.2.25,!=0.2.58" && \
     cd /opt/inference && \
     python setup.py build_web && \
-    git restore . && \
+    # git restore . && \
     pip install -i "$PIP_INDEX" --no-deps "."
