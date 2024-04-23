@@ -1,7 +1,7 @@
 # FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-devel
 # FROM pytorch/pytorch:1.13.1-cuda11.6-cudnn8-devel
-FROM nvidia/cuda:11.6.1-runtime-ubuntu20.04
-# FROM nvidia/cuda:11.6.1-devel-ubuntu20.04
+# FROM nvidia/cuda:11.6.1-runtime-ubuntu20.04
+FROM nvidia/cuda:11.6.1-devel-ubuntu20.04
 # FROM nvidia/cuda:11.6.1-cudnn8-runtime-ubuntu20.04
 # FROM rocker/cuda:4.2.1-cuda10.1
 # FROM rocker/cuda:4.2.0-cuda11.1
@@ -24,12 +24,12 @@ RUN apt-get -y update \
 ENV PATH $NVM_DIR/versions/node/v$NODE_VERSION/bin:$PATH
 
 ARG PIP_INDEX=https://pypi.org/simple
-RUN python3 -m pip install --upgrade -i "$PIP_INDEX" pip && \
+RUN python3 -m pip install --no-cache-dir --upgrade -i "$PIP_INDEX" pip && \
     # CMAKE_ARGS="-DGGML_CUBLAS=ON" pip install -i "$PIP_INDEX" -U chatglm-cpp && \
-  CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install -i "$PIP_INDEX" -U llama-cpp-python && \
+  CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install --no-cache-dir -i "$PIP_INDEX" -U llama-cpp-python && \
     cd /opt/inference && \
     python3 setup.py build_web && \
     git restore . && \
-    pip install  -i "$PIP_INDEX" ".[all]" && \
+    pip install  --no-cache-dir -i "$PIP_INDEX" ".[all]" && \
     pip uninstall -y opencv-contrib-python && \
-    pip install -i "$PIP_INDEX" opencv-contrib-python-headless
+    pip install --no-cache-dir -i "$PIP_INDEX" opencv-contrib-python-headless
