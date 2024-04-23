@@ -1,11 +1,16 @@
 name: Xinference CD for DockerHub
 
 on:
-  schedule:
-    - cron: '0 18 * * *'
+  # schedule:
+  #   - cron: '0 18 * * *'
+  # push:
+  #   tags:
+  #     - '*'
   push:
-    tags:
+    branches:
       - '*'
+  pull_request:
+    types: ['opened', 'reopened', 'synchronize']
   workflow_dispatch:
 
 concurrency:
@@ -60,7 +65,7 @@ jobs:
               export IMAGE_TAG="$GIT_TAG"
             else
               git checkout $branch
-              export IMAGE_TAG="nightly-$branch"
+              export IMAGE_TAG="nightly2-$branch"
             fi
             docker build -t "$DOCKER_ORG/xinference:${IMAGE_TAG}" --progress=plain -f xinference/deploy/docker/Dockerfile .
             docker push "$DOCKER_ORG/xinference:${IMAGE_TAG}"
