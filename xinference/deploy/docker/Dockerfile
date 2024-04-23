@@ -1,6 +1,8 @@
 # FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-devel
 # FROM pytorch/pytorch:1.13.1-cuda11.6-cudnn8-devel
 FROM nvidia/cuda:11.6.1-devel-ubuntu20.04
+# FROM rocker/cuda:4.2.1-cuda10.1
+# FROM rocker/cuda:4.2.0-cuda11.1
 COPY . /opt/inference
 
 ENV NVM_DIR /usr/local/nvm
@@ -24,8 +26,8 @@ RUN python3 -m pip install --upgrade -i "$PIP_INDEX" pip && \
     # CMAKE_ARGS="-DGGML_CUBLAS=ON" pip install -i "$PIP_INDEX" -U chatglm-cpp && \
     CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install -i "$PIP_INDEX" -U llama-cpp-python && \
     cd /opt/inference && \
-    python setup.py build_web && \
-    git restore . && \
+    python3 setup.py build_web && \
+    # git restore . && \
     pip install -i "$PIP_INDEX" ".[all]" && \
     pip uninstall -y opencv-contrib-python && \
     pip install -i "$PIP_INDEX" opencv-contrib-python-headless
