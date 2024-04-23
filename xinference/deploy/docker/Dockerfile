@@ -24,12 +24,12 @@ RUN apt-get -y update \
 ENV PATH $NVM_DIR/versions/node/v$NODE_VERSION/bin:$PATH
 
 ARG PIP_INDEX=https://pypi.org/simple
-RUN python3 -m pip install --no-cache-dir --upgrade -i "$PIP_INDEX" pip && \
+RUN python3 -m pip install --upgrade -i "$PIP_INDEX" pip && \
     # CMAKE_ARGS="-DGGML_CUBLAS=ON" pip install -i "$PIP_INDEX" -U chatglm-cpp && \
-  CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install --no-cache-dir -i "$PIP_INDEX" -U llama-cpp-python && \
+  CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install -i "$PIP_INDEX" -U llama-cpp-python && \
     cd /opt/inference && \
     python3 setup.py build_web && \
     git restore . && \
-    pip install --no-cache-dir -i "$PIP_INDEX" ".[all]" && \
+    pip install  -i "$PIP_INDEX" ".[all]" && \
     pip uninstall -y opencv-contrib-python && \
-    pip install --no-cache-dir -i "$PIP_INDEX" opencv-contrib-python-headless
+    pip install -i "$PIP_INDEX" opencv-contrib-python-headless
