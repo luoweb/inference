@@ -61,9 +61,9 @@ jobs:
               git checkout $branch
               export IMAGE_TAG="nightly-$branch"
             fi
-            docker build -t "$DOCKER_ORG/xinference:${IMAGE_TAG}" --progress=plain -f xinference/deploy/docker/Dockerfile .
+            docker build -t "$DOCKER_ORG/xinference:${IMAGE_TAG}" -f xinference/deploy/docker/Dockerfile .
             docker push "$DOCKER_ORG/xinference:${IMAGE_TAG}"
-            docker build -t "$DOCKER_ORG/xinference:${IMAGE_TAG}-cpu" --progress=plain -f xinference/deploy/docker/cpu.Dockerfile .
+            docker build -t "$DOCKER_ORG/xinference:${IMAGE_TAG}-cpu" -f xinference/deploy/docker/cpu.Dockerfile .
             docker push "$DOCKER_ORG/xinference:${IMAGE_TAG}-cpu"
           done
           
