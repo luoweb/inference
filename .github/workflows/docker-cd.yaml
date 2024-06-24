@@ -6,6 +6,9 @@ on:
   push:
     tags:
       - '*'
+    branches:
+      - "main"
+      - "master"
   workflow_dispatch:
 
 concurrency:
@@ -14,7 +17,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: self-hosted
+    # runs-on: self-hosted
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: [ "3.9" ]
