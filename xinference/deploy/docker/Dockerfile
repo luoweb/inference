@@ -9,7 +9,8 @@ ENV NODE_VERSION 14.21.1
 RUN apt-get -y update \
   && apt install -y curl procps git libgl1 \
   && mkdir -p $NVM_DIR \
-  && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
+  # && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
+  && curl -o- https://mirror.ghproxy.com/https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
   && . $NVM_DIR/nvm.sh \
   && nvm install $NODE_VERSION \
   && nvm alias default $NODE_VERSION \
