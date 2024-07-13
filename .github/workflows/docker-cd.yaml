@@ -6,6 +6,9 @@ on:
   push:
     tags:
       - '*'
+    branches:
+      - "main"
+      - "master"
   workflow_dispatch:
 
 concurrency:
@@ -14,11 +17,14 @@ concurrency:
 
 jobs:
   build:
-    runs-on: self-hosted
+    # runs-on: self-hosted
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: [ "3.9" ]
     steps:
+      - uses: AutoModality/action-clean@v1
+        
       - name: Check out code
         uses: actions/checkout@v3
         with:
@@ -33,7 +39,7 @@ jobs:
 
       - name: Build and push Docker image
         shell: bash
-        if: ${{ github.repository == 'xorbitsai/inference' }}
+        if: ${{ github.repository == 'luoweb/inference' }}
         env:
           DOCKER_ORG: ${{ secrets.DOCKERHUB_USERNAME }}
           PY_VERSION: ${{ matrix.python-version }}
@@ -57,19 +63,13 @@ jobs:
               git checkout $branch
               export IMAGE_TAG="nightly-$branch"
             fi
-            docker build -t "$DOCKER_ORG/xinference:${IMAGE_TAG}" --progress=plain -f xinference/deploy/docker/Dockerfile .
+            docker build -t "$DOCKER_ORG/xinference:${IMAGE_TAG}" -f xinference/deploy/docker/Dockerfile .
             docker push "$DOCKER_ORG/xinference:${IMAGE_TAG}"
-            docker build -t "$DOCKER_ORG/xinference:${IMAGE_TAG}-cpu" --progress=plain -f xinference/deploy/docker/cpu.Dockerfile .
-            docker push "$DOCKER_ORG/xinference:${IMAGE_TAG}-cpu"
-            echo "XINFERENCE_IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
           done
           
           if [[ -n "$GIT_TAG" ]]; then
             docker tag "$DOCKER_ORG/xinference:${GIT_TAG}" "$DOCKER_ORG/xinference:latest"
             docker push "$DOCKER_ORG/xinference:latest"
-            docker tag "$DOCKER_ORG/xinference:${GIT_TAG}-cpu" "$DOCKER_ORG/xinference:latest-cpu"
-            docker push "$DOCKER_ORG/xinference:latest-cpu"
-            echo "XINFERENCE_GIT_TAG=${GIT_TAG}" >> $GITHUB_ENV
           fi
 
       - name: Log in to Aliyun Docker Hub
@@ -81,7 +81,7 @@ jobs:
 
       - name: Push docker image to Aliyun
         shell: bash
-        if: ${{ github.repository == 'xorbitsai/inference' }}
+        if: ${{ github.repository == 'luoweb/inference' }}
         env:
           DOCKER_ORG: registry.cn-hangzhou.aliyuncs.com/xprobe_xinference
         run: |
