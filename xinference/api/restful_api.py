@@ -133,6 +133,7 @@ class SpeechRequest(BaseModel):
 
 class RegisterModelRequest(BaseModel):
     model: str
+    worker_ip: Optional[str]
     persist: bool
 
 
@@ -501,6 +502,16 @@ class RESTfulAPI:
                 else None
             ),
         )
+        self._router.add_api_route(
+            "/v1/flexible/infers",
+            self.create_flexible_infer,
+            methods=["POST"],
+            dependencies=(
+                [Security(self._auth_service, scopes=["models:read"])]
+                if self.is_authenticated()
+                else None
+            ),
+        )
 
         # for custom models
         self._router.add_api_route(
@@ -772,6 +783,7 @@ class RESTfulAPI:
         peft_model_config = payload.get("peft_model_config", None)
         worker_ip = payload.get("worker_ip", None)
         gpu_idx = payload.get("gpu_idx", None)
+        download_hub = payload.get("download_hub", None)
 
         exclude_keys = {
             "model_uid",
@@ -787,6 +799,7 @@ class RESTfulAPI:
             "peft_model_config",
             "worker_ip",
             "gpu_idx",
+            "download_hub",
         }
 
         kwargs = {
@@ -834,9 +847,9 @@ class RESTfulAPI:
                 peft_model_config=peft_model_config,
                 worker_ip=worker_ip,
                 gpu_idx=gpu_idx,
+                download_hub=download_hub,
                 **kwargs,
             )
-
         except ValueError as ve:
             logger.error(str(ve), exc_info=True)
             raise HTTPException(status_code=400, detail=str(ve))
@@ -1397,6 +1410,40 @@ class RESTfulAPI:
             await self._report_error_event(model_uid, str(e))
             raise HTTPException(status_code=500, detail=str(e))
 
+    async def create_flexible_infer(self, request: Request) -> Response:
+        payload = await request.json()
+
+        model_uid = payload.get("model")
+
+        exclude = {
+            "model",
+        }
+        kwargs = {key: value for key, value in payload.items() if key not in exclude}
+
+        try:
+            model = await (await self._get_supervisor_ref()).get_model(model_uid)
+        except ValueError as ve:
+            logger.error(str(ve), exc_info=True)
+            await self._report_error_event(model_uid, str(ve))
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            logger.error(e, exc_info=True)
+            await self._report_error_event(model_uid, str(e))
+            raise HTTPException(status_code=500, detail=str(e))
+
+        try:
+            result = await model.infer(**kwargs)
+            return Response(result, media_type="application/json")
+        except RuntimeError as re:
+            logger.error(re, exc_info=True)
+            await self._report_error_event(model_uid, str(re))
+            self.handle_request_limit_error(re)
+            raise HTTPException(status_code=400, detail=str(re))
+        except Exception as e:
+            logger.error(e, exc_info=True)
+            await self._report_error_event(model_uid, str(e))
+            raise HTTPException(status_code=500, detail=str(e))
+
     async def create_chat_completion(self, request: Request) -> Response:
         raw_body = await request.json()
         body = CreateChatCompletion.parse_obj(raw_body)
@@ -1477,14 +1524,14 @@ class RESTfulAPI:
             await self._report_error_event(model_uid, str(e))
             raise HTTPException(status_code=500, detail=str(e))
 
-        from ..model.llm.utils import QWEN_TOOL_CALL_FAMILY
+        from ..model.llm.utils import GLM4_TOOL_CALL_FAMILY, QWEN_TOOL_CALL_FAMILY
 
         model_family = desc.get("model_family", "")
-        function_call_models = [
-            "chatglm3",
-            "glm4-chat",
-            "gorilla-openfunctions-v1",
-        ] + QWEN_TOOL_CALL_FAMILY
+        function_call_models = (
+            ["chatglm3", "gorilla-openfunctions-v1"]
+            + QWEN_TOOL_CALL_FAMILY
+            + GLM4_TOOL_CALL_FAMILY
+        )
 
         is_qwen = desc.get("model_format") == "ggmlv3" and "qwen-chat" == model_family
 
@@ -1593,11 +1640,12 @@ class RESTfulAPI:
     async def register_model(self, model_type: str, request: Request) -> JSONResponse:
         body = RegisterModelRequest.parse_obj(await request.json())
         model = body.model
+        worker_ip = body.worker_ip
         persist = body.persist
 
         try:
             await (await self._get_supervisor_ref()).register_model(
-                model_type, model, persist
+                model_type, model, persist, worker_ip
             )
         except ValueError as re:
             logger.error(re, exc_info=True)

@@ -182,8 +182,6 @@ class RESTfulRerankModelHandle(RESTfulModelHandle):
                 f"Failed to rerank documents, detail: {response.json()['detail']}"
             )
         response_data = response.json()
-        for r in response_data["results"]:
-            r["document"] = documents[r["index"]]
         return response_data
 
 
@@ -732,6 +730,41 @@ class RESTfulAudioModelHandle(RESTfulModelHandle):
         return response.content
 
 
+class RESTfulFlexibleModelHandle(RESTfulModelHandle):
+    def infer(
+        self,
+        **kwargs,
+    ):
+        """
+        Call flexible model.
+
+        Parameters
+        ----------
+
+        kwargs: dict
+            The inference arguments.
+
+
+        Returns
+        -------
+        bytes
+            The inference result.
+        """
+        url = f"{self._base_url}/v1/flexible/infers"
+        params = {
+            "model": self._model_uid,
+        }
+        params.update(kwargs)
+
+        response = requests.post(url, json=params, headers=self.auth_headers)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Failed to predict, detail: {_get_error_string(response)}"
+            )
+
+        return response.content
+
+
 class Client:
     def __init__(self, base_url, api_key: Optional[str] = None):
         self.base_url = base_url
@@ -1011,6 +1044,10 @@ class Client:
             return RESTfulAudioModelHandle(
                 model_uid, self.base_url, auth_headers=self._headers
             )
+        elif desc["model_type"] == "flexible":
+            return RESTfulFlexibleModelHandle(
+                model_uid, self.base_url, auth_headers=self._headers
+            )
         else:
             raise ValueError(f"Unknown model type:{desc['model_type']}")
 
@@ -1064,7 +1101,13 @@ class Client:
             )
         return response.json()
 
-    def register_model(self, model_type: str, model: str, persist: bool):
+    def register_model(
+        self,
+        model_type: str,
+        model: str,
+        persist: bool,
+        worker_ip: Optional[str] = None,
+    ):
         """
         Register a custom model.
 
@@ -1074,6 +1117,8 @@ class Client:
             The type of model.
         model: str
             The model definition. (refer to: https://inference.readthedocs.io/en/latest/models/custom.html)
+        worker_ip: Optional[str]
+            The IP address of the worker on which the model is running.
         persist: bool
 
 
@@ -1083,7 +1128,7 @@ class Client:
             Report failure to register the custom model. Provide details of failure through error message.
         """
         url = f"{self.base_url}/v1/model_registrations/{model_type}"
-        request_body = {"model": model, "persist": persist}
+        request_body = {"model": model, "worker_ip": worker_ip, "persist": persist}
         response = requests.post(url, json=request_body, headers=self._headers)
         if response.status_code != 200:
             raise RuntimeError(

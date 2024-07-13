@@ -22,7 +22,7 @@ import threading
 import time
 from collections import defaultdict
 from logging import getLogger
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
 
 import xoscar as xo
 from async_timeout import timeout
@@ -73,6 +73,9 @@ class WorkerActor(xo.StatelessActor):
         self._main_pool.recover_sub_pool = self.recover_sub_pool
 
         # internal states.
+        # temporary placeholder during model launch process:
+        self._model_uid_launching_guard: Dict[str, bool] = {}
+        # attributes maintained after model launched:
         self._model_uid_to_model: Dict[str, xo.ActorRefType["ModelActor"]] = {}
         self._model_uid_to_model_spec: Dict[str, ModelDescription] = {}
         self._gpu_to_model_uid: Dict[int, str] = {}
@@ -209,48 +212,81 @@ class WorkerActor(xo.StatelessActor):
 
         from ..model.audio import (
             CustomAudioModelFamilyV1,
+            generate_audio_description,
             get_audio_model_descriptions,
             register_audio,
             unregister_audio,
         )
         from ..model.embedding import (
             CustomEmbeddingModelSpec,
+            generate_embedding_description,
             get_embedding_model_descriptions,
             register_embedding,
             unregister_embedding,
         )
+        from ..model.flexible import (
+            FlexibleModelSpec,
+            get_flexible_model_descriptions,
+            register_flexible_model,
+            unregister_flexible_model,
+        )
         from ..model.image import (
             CustomImageModelFamilyV1,
+            generate_image_description,
             get_image_model_descriptions,
             register_image,
             unregister_image,
         )
         from ..model.llm import (
             CustomLLMFamilyV1,
+            generate_llm_description,
             get_llm_model_descriptions,
             register_llm,
             unregister_llm,
         )
         from ..model.rerank import (
             CustomRerankModelSpec,
+            generate_rerank_description,
             get_rerank_model_descriptions,
             register_rerank,
             unregister_rerank,
         )
 
         self._custom_register_type_to_cls: Dict[str, Tuple] = {  # type: ignore
-            "LLM": (CustomLLMFamilyV1, register_llm, unregister_llm),
+            "LLM": (
+                CustomLLMFamilyV1,
+                register_llm,
+                unregister_llm,
+                generate_llm_description,
+            ),
             "embedding": (
                 CustomEmbeddingModelSpec,
                 register_embedding,
                 unregister_embedding,
+                generate_embedding_description,
             ),
-            "rerank": (CustomRerankModelSpec, register_rerank, unregister_rerank),
-            "audio": (CustomAudioModelFamilyV1, register_audio, unregister_audio),
+            "rerank": (
+                CustomRerankModelSpec,
+                register_rerank,
+                unregister_rerank,
+                generate_rerank_description,
+            ),
             "image": (
                 CustomImageModelFamilyV1,
                 register_image,
                 unregister_image,
+                generate_image_description,
+            ),
+            "audio": (
+                CustomAudioModelFamilyV1,
+                register_audio,
+                unregister_audio,
+                generate_audio_description,
+            ),
+            "flexible": (
+                FlexibleModelSpec,
+                register_flexible_model,
+                unregister_flexible_model,
             ),
         }
 
@@ -261,6 +297,7 @@ class WorkerActor(xo.StatelessActor):
         model_version_infos.update(get_rerank_model_descriptions())
         model_version_infos.update(get_image_model_descriptions())
         model_version_infos.update(get_audio_model_descriptions())
+        model_version_infos.update(get_flexible_model_descriptions())
         await self._cache_tracker_ref.record_model_version(
             model_version_infos, self.address
         )
@@ -511,17 +548,23 @@ class WorkerActor(xo.StatelessActor):
                 raise ValueError(f"{model_name} model can't run on Darwin system.")
 
     @log_sync(logger=logger)
-    def register_model(self, model_type: str, model: str, persist: bool):
+    async def register_model(self, model_type: str, model: str, persist: bool):
         # TODO: centralized model registrations
         if model_type in self._custom_register_type_to_cls:
             (
                 model_spec_cls,
                 register_fn,
                 unregister_fn,
+                generate_fn,
             ) = self._custom_register_type_to_cls[model_type]
             model_spec = model_spec_cls.parse_raw(model)
             try:
                 register_fn(model_spec, persist)
+                await self._cache_tracker_ref.record_model_version(
+                    generate_fn(model_spec), self.address
+                )
+            except ValueError as e:
+                raise e
             except Exception as e:
                 unregister_fn(model_spec.model_name, raise_error=False)
                 raise e
@@ -529,13 +572,126 @@ class WorkerActor(xo.StatelessActor):
             raise ValueError(f"Unsupported model type: {model_type}")
 
     @log_sync(logger=logger)
-    def unregister_model(self, model_type: str, model_name: str):
+    async def unregister_model(self, model_type: str, model_name: str):
         # TODO: centralized model registrations
         if model_type in self._custom_register_type_to_cls:
-            _, _, unregister_fn = self._custom_register_type_to_cls[model_type]
-            unregister_fn(model_name)
+            _, _, unregister_fn, _ = self._custom_register_type_to_cls[model_type]
+            unregister_fn(model_name, False)
         else:
             raise ValueError(f"Unsupported model type: {model_type}")
+
+    @log_async(logger=logger)
+    async def list_model_registrations(
+        self, model_type: str, detailed: bool = False
+    ) -> List[Dict[str, Any]]:
+        def sort_helper(item):
+            assert isinstance(item["model_name"], str)
+            return item.get("model_name").lower()
+
+        if model_type == "LLM":
+            from ..model.llm import get_user_defined_llm_families
+
+            ret = []
+
+            for family in get_user_defined_llm_families():
+                ret.append({"model_name": family.model_name, "is_builtin": False})
+
+            ret.sort(key=sort_helper)
+            return ret
+        elif model_type == "embedding":
+            from ..model.embedding.custom import get_user_defined_embeddings
+
+            ret = []
+
+            for model_spec in get_user_defined_embeddings():
+                ret.append({"model_name": model_spec.model_name, "is_builtin": False})
+
+            ret.sort(key=sort_helper)
+            return ret
+        elif model_type == "image":
+            from ..model.image.custom import get_user_defined_images
+
+            ret = []
+
+            for model_spec in get_user_defined_images():
+                ret.append({"model_name": model_spec.model_name, "is_builtin": False})
+
+            ret.sort(key=sort_helper)
+            return ret
+        elif model_type == "audio":
+            from ..model.audio.custom import get_user_defined_audios
+
+            ret = []
+
+            for model_spec in get_user_defined_audios():
+                ret.append({"model_name": model_spec.model_name, "is_builtin": False})
+
+            ret.sort(key=sort_helper)
+            return ret
+        elif model_type == "rerank":
+            from ..model.rerank.custom import get_user_defined_reranks
+
+            ret = []
+
+            for model_spec in get_user_defined_reranks():
+                ret.append({"model_name": model_spec.model_name, "is_builtin": False})
+
+            ret.sort(key=sort_helper)
+            return ret
+        else:
+            raise ValueError(f"Unsupported model type: {model_type}")
+
+    @log_sync(logger=logger)
+    async def get_model_registration(self, model_type: str, model_name: str) -> Any:
+        if model_type == "LLM":
+            from ..model.llm import get_user_defined_llm_families
+
+            for f in get_user_defined_llm_families():
+                if f.model_name == model_name:
+                    return f
+        elif model_type == "embedding":
+            from ..model.embedding.custom import get_user_defined_embeddings
+
+            for f in get_user_defined_embeddings():
+                if f.model_name == model_name:
+                    return f
+        elif model_type == "image":
+            from ..model.image.custom import get_user_defined_images
+
+            for f in get_user_defined_images():
+                if f.model_name == model_name:
+                    return f
+        elif model_type == "audio":
+            from ..model.audio.custom import get_user_defined_audios
+
+            for f in get_user_defined_audios():
+                if f.model_name == model_name:
+                    return f
+        elif model_type == "rerank":
+            from ..model.rerank.custom import get_user_defined_reranks
+
+            for f in get_user_defined_reranks():
+                if f.model_name == model_name:
+                    return f
+        return None
+
+    @log_async(logger=logger)
+    async def query_engines_by_model_name(self, model_name: str):
+        from copy import deepcopy
+
+        from ..model.llm.llm_family import LLM_ENGINES
+
+        if model_name not in LLM_ENGINES:
+            return None
+
+        # filter llm_class
+        engine_params = deepcopy(LLM_ENGINES[model_name])
+        for engine in engine_params:
+            params = engine_params[engine]
+            for param in params:
+                del param["llm_class"]
+
+        return engine_params
 
     async def _get_model_ability(self, model: Any, model_type: str) -> List[str]:
         from ..model.llm.core import LLM
@@ -548,6 +704,8 @@ class WorkerActor(xo.StatelessActor):
             return ["text_to_image"]
         elif model_type == "audio":
             return ["audio_to_text"]
+        elif model_type == "flexible":
+            return ["flexible"]
         else:
             assert model_type == "LLM"
             assert isinstance(model, LLM)
@@ -584,6 +742,7 @@ class WorkerActor(xo.StatelessActor):
         peft_model_config: Optional[PeftModelConfig] = None,
         request_limits: Optional[int] = None,
         gpu_idx: Optional[Union[int, List[int]]] = None,
+        download_hub: Optional[Literal["huggingface", "modelscope", "csghub"]] = None,
         **kwargs,
     ):
         # !!! Note that The following code must be placed at the very beginning of this function,
@@ -594,10 +753,14 @@ class WorkerActor(xo.StatelessActor):
         launch_args.pop("kwargs")
         launch_args.update(kwargs)
 
-        event_model_uid, _, __ = parse_replica_model_uid(model_uid)
+        try:
+            origin_uid, _, _ = parse_replica_model_uid(model_uid)
+        except Exception as e:
+            logger.exception(e)
+            raise
         try:
             await self._event_collector_ref.report_event(
-                event_model_uid,
+                origin_uid,
                 Event(
                     event_type=EventType.INFO,
                     event_ts=int(time.time()),
@@ -640,50 +803,56 @@ class WorkerActor(xo.StatelessActor):
         assert model_uid not in self._model_uid_to_model
         self._check_model_is_valid(model_name, model_format)
 
-        subpool_address, devices = await self._create_subpool(
-            model_uid, model_type, n_gpu=n_gpu, gpu_idx=gpu_idx
-        )
+        if self.get_model_launch_status(model_uid) is not None:
+            raise ValueError(f"{model_uid} is running")
 
         try:
-            origin_uid, _, _ = parse_replica_model_uid(model_uid)
-            model, model_description = await asyncio.to_thread(
-                create_model_instance,
-                subpool_address,
-                devices,
-                model_uid,
-                model_type,
-                model_name,
-                model_engine,
-                model_format,
-                model_size_in_billions,
-                quantization,
-                peft_model_config,
-                **kwargs,
+            self._model_uid_launching_guard[model_uid] = True
+            subpool_address, devices = await self._create_subpool(
+                model_uid, model_type, n_gpu=n_gpu, gpu_idx=gpu_idx
             )
-            await self.update_cache_status(model_name, model_description)
-            model_ref = await xo.create_actor(
-                ModelActor,
-                address=subpool_address,
-                uid=model_uid,
-                worker_address=self.address,
-                model=model,
-                model_description=model_description,
-                request_limits=request_limits,
-            )
-            await model_ref.load()
-        except:
-            logger.error(f"Failed to load model {model_uid}", exc_info=True)
-            self.release_devices(model_uid=model_uid)
-            await self._main_pool.remove_sub_pool(subpool_address)
-            raise
 
-        self._model_uid_to_model[model_uid] = model_ref
-        self._model_uid_to_model_spec[model_uid] = model_description
-        self._model_uid_to_addr[model_uid] = subpool_address
-        self._model_uid_to_recover_count.setdefault(
-            model_uid, MODEL_ACTOR_AUTO_RECOVER_LIMIT
-        )
-        self._model_uid_to_launch_args[model_uid] = launch_args
+            try:
+                model, model_description = await asyncio.to_thread(
+                    create_model_instance,
+                    subpool_address,
+                    devices,
+                    model_uid,
+                    model_type,
+                    model_name,
+                    model_engine,
+                    model_format,
+                    model_size_in_billions,
+                    quantization,
+                    peft_model_config,
+                    download_hub,
+                    **kwargs,
+                )
+                await self.update_cache_status(model_name, model_description)
+                model_ref = await xo.create_actor(
+                    ModelActor,
+                    address=subpool_address,
+                    uid=model_uid,
+                    worker_address=self.address,
+                    model=model,
+                    model_description=model_description,
+                    request_limits=request_limits,
+                )
+                await model_ref.load()
+            except:
+                logger.error(f"Failed to load model {model_uid}", exc_info=True)
+                self.release_devices(model_uid=model_uid)
+                await self._main_pool.remove_sub_pool(subpool_address)
+                raise
+            self._model_uid_to_model[model_uid] = model_ref
+            self._model_uid_to_model_spec[model_uid] = model_description
+            self._model_uid_to_addr[model_uid] = subpool_address
+            self._model_uid_to_recover_count.setdefault(
+                model_uid, MODEL_ACTOR_AUTO_RECOVER_LIMIT
+            )
+            self._model_uid_to_launch_args[model_uid] = launch_args
+        finally:
+            del self._model_uid_launching_guard[model_uid]
 
         # update status to READY
         abilities = await self._get_model_ability(model, model_type)
@@ -694,10 +863,13 @@ class WorkerActor(xo.StatelessActor):
 
     @log_async(logger=logger)
     async def terminate_model(self, model_uid: str):
-        event_model_uid, _, __ = parse_replica_model_uid(model_uid)
+        # Terminate model while its launching is not allow
+        if model_uid in self._model_uid_launching_guard:
+            raise ValueError(f"{model_uid} is launching")
+        origin_uid, _, __ = parse_replica_model_uid(model_uid)
         try:
             await self._event_collector_ref.report_event(
-                event_model_uid,
+                origin_uid,
                 Event(
                     event_type=EventType.INFO,
                     event_ts=int(time.time()),
@@ -708,7 +880,6 @@ class WorkerActor(xo.StatelessActor):
             # Report callback error can be log and ignore, should not interrupt the Process
             logger.error("report_event error: %s" % (e))
 
-        origin_uid, _, _ = parse_replica_model_uid(model_uid)
         await self._status_guard_ref.update_instance_info(
             origin_uid, {"status": LaunchStatus.TERMINATING.name}
         )
@@ -739,6 +910,21 @@ class WorkerActor(xo.StatelessActor):
             await self._status_guard_ref.update_instance_info(
                 origin_uid, {"status": LaunchStatus.TERMINATED.name}
             )
+
+    # Provide an interface for future version of supervisor to call
+    def get_model_launch_status(self, model_uid: str) -> Optional[str]:
+        """
+        returns:
+            CREATING: model is launching
+            RREADY: model is running
+            None: model is not running (launch error might have happened)
+        """
+
+        if model_uid in self._model_uid_launching_guard:
+            return LaunchStatus.CREATING.name
+        if model_uid in self._model_uid_to_model:
+            return LaunchStatus.READY.name
+        return None
 
     @log_async(logger=logger)
     async def list_models(self) -> Dict[str, Dict[str, Any]]:
