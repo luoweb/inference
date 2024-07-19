@@ -1,9 +1,10 @@
 # FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-devel
-FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-devel
+# FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-devel
 # ARG BASE_TAG=main-base
 # FROM winglian/axolotl-base:$BASE_TAG
 # FROM registry.cn-hangzhou.aliyuncs.com/roweb/axolotl-base:$BASE_TAG
 # FROM vllm/vllm-openai:latest
+FROM python:3.11-slim 
 
 COPY . /opt/inference
 WORKDIR /opt/inference
