@@ -1,8 +1,8 @@
 name: Xinference CD for DockerHub
 
 on:
-  schedule:
-    - cron: '0 18 * * *'
+  # schedule:
+  #   - cron: '0 18 * * *'
   push:
     tags:
       - '*'
@@ -23,8 +23,17 @@ jobs:
       matrix:
         python-version: [ "3.9" ]
     steps:
-      - uses: AutoModality/action-clean@v1
-        
+      # - uses: AutoModality/action-clean@v1
+      - name: Clean docker image cache
+        shell: bash
+        # if: ${{ github.repository == 'xorbitsai/inference' }}
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          df -h
       - name: Check out code
         uses: actions/checkout@v3
         with:
