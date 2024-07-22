@@ -94,14 +94,14 @@ jobs:
         env:
           DOCKER_ORG: registry.cn-hangzhou.aliyuncs.com/roweb
         run: |
-          docker tag "xprobe/xinference:${XINFERENCE_IMAGE_TAG}" "${DOCKER_ORG}/xinference:${XINFERENCE_IMAGE_TAG}"
+          docker tag "luoweb/xinference:${XINFERENCE_IMAGE_TAG}" "${DOCKER_ORG}/xinference:${XINFERENCE_IMAGE_TAG}"
           docker push "${DOCKER_ORG}/xinference:${XINFERENCE_IMAGE_TAG}"
-          docker tag "xprobe/xinference:${XINFERENCE_IMAGE_TAG}-cpu" "${DOCKER_ORG}/xinference:${XINFERENCE_IMAGE_TAG}-cpu"
+          docker tag "luoweb/xinference:${XINFERENCE_IMAGE_TAG}-cpu" "${DOCKER_ORG}/xinference:${XINFERENCE_IMAGE_TAG}-cpu"
           docker push "${DOCKER_ORG}/xinference:${XINFERENCE_IMAGE_TAG}-cpu"
           if [[ -n "$XINFERENCE_GIT_TAG" ]]; then
-            docker tag "xprobe/xinference:${XINFERENCE_GIT_TAG}" "$DOCKER_ORG/xinference:latest"
+            docker tag "luoweb/xinference:${XINFERENCE_GIT_TAG}" "$DOCKER_ORG/xinference:latest"
             docker push "$DOCKER_ORG/xinference:latest"
-            docker tag "xprobe/xinference:${XINFERENCE_GIT_TAG}-cpu" "$DOCKER_ORG/xinference:latest-cpu"
+            docker tag "luoweb/xinference:${XINFERENCE_GIT_TAG}-cpu" "$DOCKER_ORG/xinference:latest-cpu"
             docker push "$DOCKER_ORG/xinference:latest-cpu"
           fi
 
