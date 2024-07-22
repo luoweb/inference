@@ -9,11 +9,12 @@ FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-devel
 COPY . /opt/inference
 WORKDIR /opt/inference
 
+ENV DEBIAN_FRONTEND=noninteractive
 ENV NVM_DIR /usr/local/nvm
 ENV NODE_VERSION 14.21.1
 
 RUN apt-get -y update \
-  && apt install -y curl procps git libgl1 ffmpeg \
+  && DEBIAN_FRONTEND=noninteractive apt install -y curl procps git libgl1 ffmpeg \
   && mkdir -p $NVM_DIR \
   && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
   # && curl -o- https://mirror.ghproxy.com/https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
