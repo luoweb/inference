@@ -26,7 +26,7 @@ jobs:
       # - uses: AutoModality/action-clean@v1
       - name: Clean docker image cache
         shell: bash
-        # if: ${{ github.repository == 'xorbitsai/inference' }}
+        # if: ${{ github.repository == 'luoweb/inference' }}
         run: |
           df -h
           sudo rm -rf /usr/share/dotnet
@@ -48,7 +48,7 @@ jobs:
 
       - name: Build and push Docker image
         shell: bash
-        if: ${{ github.repository == 'blockmap/inference' }}
+        if: ${{ github.repository == 'luoweb/inference' }}
         env:
           DOCKER_ORG: ${{ secrets.DOCKERHUB_USERNAME }}
           PY_VERSION: ${{ matrix.python-version }}
@@ -90,7 +90,7 @@ jobs:
 
       - name: Push docker image to Aliyun
         shell: bash
-        if: ${{ github.repository == 'blockmap/inference' }}
+        if: ${{ github.repository == 'luoweb/inference' }}
         env:
           DOCKER_ORG: registry.cn-hangzhou.aliyuncs.com/roweb
         run: |
@@ -107,6 +107,6 @@ jobs:
 
       - name: Clean docker image cache
         shell: bash
-        if: ${{ github.repository == 'xorbitsai/inference' }}
+        if: ${{ github.repository == 'luoweb/inference' }}
         run: |
           docker system prune -f -a
