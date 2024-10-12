@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom'
 
 import ErrorMessageSnackBar from '../../components/errorMessageSnackBar'
 import Title from '../../components/Title'
+import { isValidBearerToken } from '../../components/utils'
 import RegisterModelComponent from './registerModel'
 
 const RegisterModel = () => {
@@ -18,13 +19,12 @@ const RegisterModel = () => {
   const navigate = useNavigate()
 
   useEffect(() => {
-    if (cookie.token === '' || cookie.token === undefined) {
+    if (
+      sessionStorage.getItem('auth') === 'true' &&
+      !isValidBearerToken(sessionStorage.getItem('token')) &&
+      !isValidBearerToken(cookie.token)
+    ) {
       navigate('/login', { replace: true })
-      return
-    }
-    if (cookie.token !== 'no_auth' && !sessionStorage.getItem('token')) {
-      navigate('/login', { replace: true })
-      return
     }
   }, [cookie.token])
 
@@ -63,7 +63,6 @@ const RegisterModel = () => {
               context_length: 2048,
               model_lang: ['en'],
               model_ability: ['generate'],
-              model_family: '',
               model_specs: [
                 {
                   model_uri: '/path/to/llama-1',
@@ -72,7 +71,7 @@ const RegisterModel = () => {
                   quantizations: ['none'],
                 },
               ],
-              prompt_style: undefined,
+              model_family: 'your_custom_model',
             }}
           />
         </TabPanel>

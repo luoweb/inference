@@ -99,10 +99,14 @@ def get_flexible_model_descriptions():
 
 
 def register_flexible_model(model_spec: FlexibleModelSpec, persist: bool):
-    from ..utils import is_valid_model_name
+    from ..utils import is_valid_model_name, is_valid_model_uri
 
     if not is_valid_model_name(model_spec.model_name):
         raise ValueError(f"Invalid model name {model_spec.model_name}.")
+
+    model_uri = model_spec.model_uri
+    if model_uri and not is_valid_model_uri(model_uri):
+        raise ValueError(f"Invalid model URI {model_uri}.")
 
     if model_spec.launcher_args:
         try:
@@ -210,10 +214,16 @@ def match_flexible_model(model_name):
 
 
 def create_flexible_model_instance(
-    subpool_addr: str, devices: List[str], model_uid: str, model_name: str, **kwargs
+    subpool_addr: str,
+    devices: List[str],
+    model_uid: str,
+    model_name: str,
+    model_path: Optional[str] = None,
+    **kwargs,
 ) -> Tuple[FlexibleModel, FlexibleModelDescription]:
     model_spec = match_flexible_model(model_name)
-    model_path = model_spec.model_uri
+    if not model_path:
+        model_path = model_spec.model_uri
     launcher_name = model_spec.launcher
     launcher_args = model_spec.parser_args()
     kwargs.update(launcher_args)

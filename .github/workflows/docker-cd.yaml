@@ -17,8 +17,9 @@ concurrency:
 
 jobs:
   build:
-    # runs-on: self-hosted
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # runs-on: self-hosted
     strategy:
       matrix:
         python-version: [ "3.9" ]

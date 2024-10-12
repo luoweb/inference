@@ -14,20 +14,24 @@
 import json
 import logging
 import os
-import shutil
+import random
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import huggingface_hub
-from fsspec import AbstractFileSystem
+import numpy as np
+import torch
 
-from ..constants import XINFERENCE_CACHE_DIR, XINFERENCE_ENV_MODEL_SRC
+from ..constants import (
+    XINFERENCE_CACHE_DIR,
+    XINFERENCE_DOWNLOAD_MAX_ATTEMPTS,
+    XINFERENCE_ENV_MODEL_SRC,
+)
 from ..device_utils import get_available_device, is_device_available
 from .core import CacheableModelSpec
 
 logger = logging.getLogger(__name__)
-MAX_ATTEMPTS = 3
 IS_NEW_HUGGINGFACE_HUB: bool = huggingface_hub.__version__ >= "0.23.0"
 
 
@@ -99,11 +103,11 @@ def retry_download(
     **kwargs,
 ):
     last_ex = None
-    for current_attempt in range(1, MAX_ATTEMPTS + 1):
+    for current_attempt in range(1, XINFERENCE_DOWNLOAD_MAX_ATTEMPTS + 1):
         try:
             return download_func(*args, **kwargs)
         except Exception as e:
-            remaining_attempts = MAX_ATTEMPTS - current_attempt
+            remaining_attempts = XINFERENCE_DOWNLOAD_MAX_ATTEMPTS - current_attempt
             last_ex = e
             logger.debug(
                 "Download failed: %s, download func: %s, download args: %s, kwargs: %s",
@@ -220,12 +224,7 @@ def is_valid_model_uri(model_uri: Optional[str]) -> bool:
         return True
 
 
-def cache_from_uri(
-    model_spec: CacheableModelSpec,
-    self_hosted_storage: bool = False,
-) -> str:
-    from fsspec import AbstractFileSystem, filesystem
-
+def cache_from_uri(model_spec: CacheableModelSpec) -> str:
     cache_dir = os.path.realpath(
         os.path.join(XINFERENCE_CACHE_DIR, model_spec.model_name)
     )
@@ -246,48 +245,6 @@ def cache_from_uri(
             )
         os.makedirs(XINFERENCE_CACHE_DIR, exist_ok=True)
         os.symlink(src_root, cache_dir, target_is_directory=True)
-        return cache_dir
-    elif src_scheme in ["s3"]:
-        # use anonymous connection for self-hosted storage.
-        src_fs: AbstractFileSystem = filesystem(src_scheme, anon=self_hosted_storage)
-        local_fs: AbstractFileSystem = filesystem("file")
-
-        files_to_download = []
-        os.makedirs(cache_dir, exist_ok=True)
-
-        for path, _, files in src_fs.walk(model_spec.model_uri):
-            for file in files:
-                src_path = f"{path}/{file}"
-                local_path = src_path.replace(src_root, cache_dir)
-                files_to_download.append((src_path, local_path))
-
-        from concurrent.futures import ThreadPoolExecutor
-
-        failed = False
-        with ThreadPoolExecutor(max_workers=min(len(files_to_download), 4)) as executor:
-            futures = [
-                (
-                    src_path,
-                    executor.submit(
-                        copy_from_src_to_dst, src_fs, src_path, local_fs, local_path
-                    ),
-                )
-                for src_path, local_path in files_to_download
-            ]
-            for src_path, future in futures:
-                if failed:
-                    future.cancel()
-                else:
-                    try:
-                        future.result()
-                    except:
-                        logger.error(f"Download {src_path} failed", exc_info=True)
-                        failed = True
-
-        if failed:
-            logger.warning(f"Removing cache directory: {cache_dir}")
-            shutil.rmtree(cache_dir, ignore_errors=True)
-            raise RuntimeError(f"Failed to download model '{model_spec.model_name}' ")
         return cache_dir
     else:
         raise ValueError(f"Unsupported URL scheme: {src_scheme}")
@@ -346,76 +303,6 @@ def cache(model_spec: CacheableModelSpec, model_description_type: type):
     return cache_dir
 
 
-def copy_from_src_to_dst(
-    _src_fs: "AbstractFileSystem",
-    _src_path: str,
-    dst_fs: "AbstractFileSystem",
-    dst_path: str,
-    max_attempt: int = 3,
-):
-    from tqdm import tqdm
-
-    for attempt in range(max_attempt):
-        logger.info(f"Copy from {_src_path} to {dst_path}, attempt: {attempt}")
-        try:
-            with _src_fs.open(_src_path, "rb") as src_file:
-                file_size = _src_fs.info(_src_path)["size"]
-
-                dst_fs.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                with dst_fs.open(dst_path, "wb") as dst_file:
-                    chunk_size = 1024 * 1024  # 1 MB
-
-                    with tqdm(
-                        total=file_size,
-                        unit="B",
-                        unit_scale=True,
-                        unit_divisor=1024,
-                        desc=_src_path,
-                    ) as pbar:
-                        while True:
-                            chunk = src_file.read(chunk_size)
-                            if not chunk:
-                                break
-                            dst_file.write(chunk)
-                            pbar.update(len(chunk))
-            logger.info(
-                f"Copy from {_src_path} to {dst_path} finished, attempt: {attempt}"
-            )
-            break
-        except:
-            logger.error(
-                f"Failed to copy from {_src_path} to {dst_path} on attempt {attempt + 1}",
-                exc_info=True,
-            )
-            if attempt + 1 == max_attempt:
-                raise
-
-
-def patch_trust_remote_code():
-    """sentence-transformers calls transformers without the trust_remote_code=True, some embedding
-    models will fail to load, e.g. jina-embeddings-v2-base-en
-
-    :return:
-    """
-    try:
-        from transformers.dynamic_module_utils import resolve_trust_remote_code
-    except ImportError:
-        logger.error("Patch transformers trust_remote_code failed.")
-    else:
-
-        def _patched_resolve_trust_remote_code(*args, **kwargs):
-            logger.info("Patched resolve_trust_remote_code: %s %s", args, kwargs)
-            return True
-
-        if (
-            resolve_trust_remote_code.__code__
-            != _patched_resolve_trust_remote_code.__code__
-        ):
-            resolve_trust_remote_code.__code__ = (
-                _patched_resolve_trust_remote_code.__code__
-            )
-
-
 def select_device(device):
     try:
         import torch  # noqa: F401
@@ -442,3 +329,10 @@ def convert_float_to_int_or_str(model_size: float) -> Union[int, str]:
         return int(model_size)
     else:
         return str(model_size)
+
+
+def set_all_random_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)

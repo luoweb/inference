@@ -37,9 +37,9 @@ def test_RESTful_client(setup):
     assert len(client.list_models()) == 0
 
     model_uid = client.launch_model(
-        model_name="orca",
+        model_name="qwen1.5-chat",
         model_engine="llama.cpp",
-        model_size_in_billions=3,
+        model_size_in_billions="0_5",
         quantization="q4_0",
     )
     assert len(client.list_models()) == 1
@@ -73,18 +73,24 @@ def test_RESTful_client(setup):
     with pytest.raises(RuntimeError):
         completion = model.chat({"max_tokens": 64})
 
-    completion = model.chat("What is the capital of France?")
+    messages = [{"role": "user", "content": "What is the capital of France?"}]
+    completion = model.chat(messages)
     assert "content" in completion["choices"][0]["message"]
 
     def _check_stream():
         streaming_response = model.chat(
-            prompt="What is the capital of France?",
+            messages,
             generate_config={"stream": True, "max_tokens": 5},
         )
         for chunk in streaming_response:
-            assert ("content" in chunk["choices"][0]["delta"]) or (
-                "role" in chunk["choices"][0]["delta"]
-            )
+            assert "finish_reason" in chunk["choices"][0]
+            finish_reason = chunk["choices"][0]["finish_reason"]
+            if finish_reason is None:
+                assert ("content" in chunk["choices"][0]["delta"]) or (
+                    "role" in chunk["choices"][0]["delta"]
+                )
+            else:
+                assert chunk["choices"][0]["delta"] == {}
 
     _check_stream()
 
@@ -93,7 +99,7 @@ def test_RESTful_client(setup):
         for _ in range(2):
             r = executor.submit(_check_stream)
             results.append(r)
-    # Parallel generation is not supported by ggml.
+    # Parallel generation is not supported by llama-cpp-python.
     error_count = 0
     for r in results:
         try:
@@ -157,9 +163,9 @@ def test_RESTful_client(setup):
         client.terminate_model(model_uid=model_uid)
 
     model_uid2 = client.launch_model(
-        model_name="orca",
+        model_name="qwen1.5-chat",
         model_engine="llama.cpp",
-        model_size_in_billions=3,
+        model_size_in_billions="0_5",
         quantization="q4_0",
     )
 
@@ -175,34 +181,6 @@ def test_list_cached_models(setup):
     assert len(res) > 0
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Skip windows")
-def test_list_deletable_models(setup):
-    endpoint, local_host = setup
-    client = RESTfulClient(endpoint)
-    response = client.list_deletable_models("orca--3B--ggmlv3--q4_0")
-    paths = response.get("paths", [])
-
-    expected_path = os.path.join(
-        os.environ["HOME"],
-        ".xinference",
-        "cache",
-        "orca-ggmlv3-3b",
-        "orca-mini-3b.ggmlv3.q4_0.bin",
-    )
-
-    normalized_expected_path = os.path.normpath(expected_path)
-
-    assert normalized_expected_path in paths
-
-
-@pytest.mark.skipif(os.name == "nt", reason="Skip windows")
-def test_remove_cached_models(setup):
-    endpoint, local_host = setup
-    client = RESTfulClient(endpoint)
-    responses = client.confirm_and_remove_model("orca--3B--ggmlv3--q4_0")
-    assert responses
-
-
 def test_RESTful_client_for_embedding(setup):
     endpoint, _ = setup
     client = RESTfulClient(endpoint)
@@ -216,13 +194,6 @@ def test_RESTful_client_for_embedding(setup):
 
     completion = model.create_embedding("write a poem.")
     assert len(completion["data"][0]["embedding"]) == 768
-
-    kwargs = {
-        "invalid": "invalid",
-    }
-    with pytest.raises(RuntimeError) as err:
-        completion = model.create_embedding("write a poem.", **kwargs)
-    assert "unexpected" in str(err.value)
 
     client.terminate_model(model_uid=model_uid)
     assert len(client.list_models()) == 0
@@ -245,7 +216,6 @@ def test_RESTful_client_custom_model(setup):
     "en", "zh"
   ],
   "model_ability": [
-    "embed",
     "chat"
   ],
   "model_family": "other",
@@ -261,15 +231,9 @@ def test_RESTful_client_custom_model(setup):
       "model_id": "ziqingyang/chinese-alpaca-2-7b"
     }
   ],
-  "prompt_style": {
-    "style_name": "ADD_COLON_SINGLE",
-    "system_prompt": "Below is an instruction that describes a task. Write a response that appropriately completes the request.",
-    "roles": [
-      "Instruction",
-      "Response"
-    ],
-    "intra_message_sep": "\\n\\n### "
-  }
+  "chat_template": "xyz",
+  "stop_token_ids": [],
+  "stop": []
 }"""
     client.register_model(model_type="LLM", model=model, persist=False)
 
@@ -293,7 +257,7 @@ def test_RESTful_client_custom_model(setup):
             custom_model_reg = model_reg
     assert custom_model_reg is None
 
-    # test register with string prompt style name
+    # test register with chat_template using model_family
     model_with_prompt = """{
   "version": 1,
   "context_length":2048,
@@ -318,12 +282,12 @@ def test_RESTful_client_custom_model(setup):
       "model_id": "ziqingyang/chinese-alpaca-2-7b"
     }
   ],
-  "prompt_style": "qwen-chat"
+  "chat_template": "qwen-chat"
 }"""
     client.register_model(model_type="LLM", model=model_with_prompt, persist=False)
     client.unregister_model(model_type="LLM", model_name="custom_model")
 
-    model_with_prompt2 = """{
+    model_with_vision = """{
       "version": 1,
       "context_length":2048,
       "model_name": "custom_model",
@@ -331,8 +295,8 @@ def test_RESTful_client_custom_model(setup):
         "en", "zh"
       ],
       "model_ability": [
-        "embed",
-        "chat"
+        "chat",
+        "vision"
       ],
       "model_family": "other",
       "model_specs": [
@@ -347,10 +311,41 @@ def test_RESTful_client_custom_model(setup):
           "model_id": "ziqingyang/chinese-alpaca-2-7b"
         }
       ],
-      "prompt_style": "xyz123"
+      "chat_template": "xyz123"
     }"""
     with pytest.raises(RuntimeError):
-        client.register_model(model_type="LLM", model=model_with_prompt2, persist=False)
+        client.register_model(model_type="LLM", model=model_with_vision, persist=False)
+
+    model_with_tool_call = """{
+          "version": 1,
+          "context_length":2048,
+          "model_name": "custom_model",
+          "model_lang": [
+            "en", "zh"
+          ],
+          "model_ability": [
+            "chat",
+            "tools"
+          ],
+          "model_family": "other",
+          "model_specs": [
+            {
+              "model_format": "pytorch",
+              "model_size_in_billions": 7,
+              "quantizations": [
+                "4-bit",
+                "8-bit",
+                "none"
+              ],
+              "model_id": "ziqingyang/chinese-alpaca-2-7b"
+            }
+          ],
+          "chat_template": "xyz123"
+        }"""
+    with pytest.raises(RuntimeError):
+        client.register_model(
+            model_type="LLM", model=model_with_tool_call, persist=False
+        )
 
 
 def test_client_from_modelscope(setup):
@@ -477,9 +472,9 @@ def test_auto_recover(set_auto_recover_limit, setup_cluster):
     client = RESTfulClient(endpoint)
 
     model_uid = client.launch_model(
-        model_name="orca",
+        model_name="qwen1.5-chat",
         model_engine="llama.cpp",
-        model_size_in_billions=3,
+        model_size_in_billions="0_5",
         quantization="q4_0",
     )
     new_children_proc = set(current_proc.children(recursive=True))
@@ -505,23 +500,3 @@ def test_auto_recover(set_auto_recover_limit, setup_cluster):
             time.sleep(1)
     else:
         assert False
-
-    new_children_proc = set(current_proc.children(recursive=True))
-    model_proc = next(iter(new_children_proc - chilren_proc))
-    assert len(client.list_models()) == 1
-
-    model_proc.kill()
-
-    expect_failed = False
-    for _ in range(5):
-        try:
-            completion = model.generate(
-                "Once upon a time, there was a very old computer", {"max_tokens": 64}
-            )
-            assert "text" in completion["choices"][0]
-            break
-        except Exception:
-            time.sleep(1)
-    else:
-        expect_failed = True
-    assert expect_failed

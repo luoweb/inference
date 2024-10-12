@@ -18,13 +18,12 @@ import logging
 import uuid
 from collections import deque
 from enum import Enum
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import xoscar as xo
 
 logger = logging.getLogger(__name__)
 
-XINFERENCE_BATCHING_CLEAN_CACHE_INTERVAL = 5
 XINFERENCE_STREAMING_DONE_FLAG = "<XINFERENCE_STREAMING_DONE>"
 XINFERENCE_STREAMING_ERROR_FLAG = "<XINFERENCE_STREAMING_ERROR>"
 XINFERENCE_STREAMING_ABORT_FLAG = "<XINFERENCE_STREAMING_ABORT>"
@@ -38,13 +37,24 @@ class AbortRequestMessage(Enum):
 
 
 class InferenceRequest:
-    def __init__(self, prompt, future_or_queue, is_prefill, *args, **kwargs):
-        # original prompt
-        self._prompt = prompt
+    def __init__(
+        self,
+        prompt_or_messages,
+        future_or_queue,
+        is_prefill,
+        call_ability,
+        *args,
+        **kwargs,
+    ):
+        # original prompt, prompt(str) for generate model and messages(List[Dict]) for chat model
+        self._prompt = prompt_or_messages
         # full prompt that contains chat history and applies chat template
         self._full_prompt = None
         # whether the current request is in the prefill phase
         self._is_prefill = is_prefill
+        # the ability that the user calls this model for, that is `generate` / `chat` for now,
+        # which is for results formatting
+        self._call_ability = call_ability
         # full prompt tokens
         self._prompt_tokens = None
         # all new generated tokens during decode phase
@@ -81,7 +91,7 @@ class InferenceRequest:
         self.future_or_queue = future_or_queue
         # Record error message when this request has error.
         # Must set stopped=True when this field is set.
-        self.error_msg: Optional[str] = None
+        self.error_msg: Optional[str] = None  # type: ignore
         # For compatibility. Record some extra parameters for some special cases.
         self.extra_kwargs = {}
 
@@ -89,38 +99,22 @@ class InferenceRequest:
         self._check_args()
 
     def _check_args(self):
-        # chat
-        if len(self._inference_args) == 3:
-            # system prompt
-            assert self._inference_args[0] is None or isinstance(
-                self._inference_args[0], str
-            )
-            # chat history
-            assert self._inference_args[1] is None or isinstance(
-                self._inference_args[1], list
-            )
-            # generate config
-            assert self._inference_args[2] is None or isinstance(
-                self._inference_args[2], dict
-            )
-        else:  # generate
-            assert len(self._inference_args) == 1
-            # generate config
-            assert self._inference_args[0] is None or isinstance(
-                self._inference_args[0], dict
-            )
+        assert len(self._inference_args) == 1
+        # generate config
+        assert self._inference_args[0] is None or isinstance(
+            self._inference_args[0], dict
+        )
 
     @property
     def prompt(self):
+        """
+        prompt for generate model and messages for chat model
+        """
         return self._prompt
 
     @property
-    def system_prompt(self):
-        return self._inference_args[0]
-
-    @property
-    def chat_history(self):
-        return self._inference_args[1]
+    def call_ability(self):
+        return self._call_ability
 
     @property
     def full_prompt(self):
@@ -163,11 +157,7 @@ class InferenceRequest:
 
     @property
     def generate_config(self):
-        return (
-            self._inference_args[2]
-            if len(self._inference_args) == 3
-            else self._inference_args[0]
-        )
+        return self._inference_args[0]
 
     @property
     def sanitized_generate_config(self):
@@ -295,11 +285,11 @@ class SchedulerActor(xo.StatelessActor):
 
     def __init__(self):
         super().__init__()
-        self._waiting_queue: deque[InferenceRequest] = deque()
-        self._running_queue: deque[InferenceRequest] = deque()
+        self._waiting_queue: deque[InferenceRequest] = deque()  # type: ignore
+        self._running_queue: deque[InferenceRequest] = deque()  # type: ignore
         self._model = None
         self._id_to_req = {}
-        self._abort_req_ids: Set[str] = set()
+        self._abort_req_ids: Set[str] = set()  # type: ignore
         self._isolation = None
 
     async def __post_create__(self):
@@ -359,7 +349,7 @@ class SchedulerActor(xo.StatelessActor):
 
     @staticmethod
     def _empty_cache():
-        from ..model.llm.pytorch.utils import empty_cache
+        from ..model.llm.transformers.utils import empty_cache
 
         empty_cache()
 
@@ -424,8 +414,17 @@ class SchedulerActor(xo.StatelessActor):
 
         self._empty_cache()
 
-    async def add_request(self, prompt: str, future_or_queue, *args, **kwargs):
-        req = InferenceRequest(prompt, future_or_queue, True, *args, **kwargs)
+    async def add_request(
+        self,
+        prompt_or_messages: Union[str, List[Dict]],
+        future_or_queue,
+        call_ability,
+        *args,
+        **kwargs,
+    ):
+        req = InferenceRequest(
+            prompt_or_messages, future_or_queue, True, call_ability, *args, **kwargs
+        )
         rid = req.request_id
         if rid is not None:
             if rid in self._id_to_req:

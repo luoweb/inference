@@ -35,14 +35,13 @@ Developing Real-world AI Applications with Xinference
 
     # Chat to LLM
     model.chat(
-       prompt="What is the largest animal?",
-       system_prompt="You are a helpful assistant",
+       messages=[{"role": "system", "content": "You are a helpful assistant"}, {"role": "user", "content": "What is the largest animal?"}],
        generate_config={"max_tokens": 1024}
     )
     
     # Chat to VL model
     model.chat(
-       chat_history=[
+       messages=[
          {
             "role": "user",
             "content": [
@@ -103,6 +102,15 @@ Developing Real-world AI Applications with Xinference
       "A woman is playing violin."
     ]
     print(model.rerank(corpus, query))
+
+  .. code-tab:: python Video
+
+    from xinference.client import Client
+
+    client = Client("http://localhost:9997")
+    model = client.get_model("MODEL_UID")
+
+    model.text_to_video("")
 
 
 Getting Started
@@ -189,11 +197,17 @@ Explore the API
 
 .. grid:: 2
 
-    .. grid-item-card::  Audio
+   .. grid-item-card::  Audio
       :link: audio
       :link-type: ref
 
       Learn how to turn audio into text or text into audio with Xinference.
+
+   .. grid-item-card::  Video
+      :link: video
+      :link-type: ref
+
+      Learn how to generate video with Xinference.
 
 
 Getting Involved

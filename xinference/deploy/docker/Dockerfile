@@ -5,6 +5,7 @@ FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-devel
 # FROM registry.cn-hangzhou.aliyuncs.com/roweb/axolotl-base:$BASE_TAG
 # FROM vllm/vllm-openai:latest
 # FROM python:3.11-slim 
+# FROM vllm/vllm-openai:v0.6.0
 
 COPY . /opt/inference
 WORKDIR /opt/inference
@@ -15,6 +16,11 @@ ENV NODE_VERSION 14.21.1
 
 RUN apt-get -y update \
   && DEBIAN_FRONTEND=noninteractive apt install -y curl procps git libgl1 ffmpeg \
+#   && apt install -y curl procps git libgl1 ffmpeg \
+  # upgrade libstdc++ and libc for llama-cpp-python
+  && printf "\ndeb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy main restricted universe multiverse" >> /etc/apt/sources.list \
+  && apt-get -y update \
+  && apt-get install -y --only-upgrade libstdc++6 && apt install -y libc6 \
   && mkdir -p $NVM_DIR \
   && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
   # && curl -o- https://mirror.ghproxy.com/https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
@@ -37,6 +43,11 @@ RUN pip install --upgrade -i "$PIP_INDEX" pip && \
     # pip install "llama-cpp-python" -i https://abetlen.github.io/llama-cpp-python/whl/cu121 && \
     pip install llama-cpp-python --prefer-binary --extra-index-url=https://jllllll.github.io/llama-cpp-python-cuBLAS-wheels/AVX2/cu118 && \
     CMAKE_ARGS="-DGGML_CUBLAS=ON" pip install -i "$PIP_INDEX" -U "chatglm-cpp<0.4.0" && \
+#     pip install "llama-cpp-python>=0.2.82" -i https://abetlen.github.io/llama-cpp-python/whl/cu124 && \
+    pip install -i "$PIP_INDEX" --upgrade-strategy only-if-needed -r /opt/inference/xinference/deploy/docker/requirements.txt && \
+    pip install -i "$PIP_INDEX" --no-deps sglang && \
+    pip uninstall flashinfer -y && \
+    pip install flashinfer -i https://flashinfer.ai/whl/cu124/torch2.4 && \
     cd /opt/inference && \
     python3 setup.py build_web && \
     git restore . && \
@@ -44,4 +55,6 @@ RUN pip install --upgrade -i "$PIP_INDEX" pip && \
     # clean packages
     pip cache purge
 
+# Overwrite the entrypoint of vllm's base image
 ENTRYPOINT []
+CMD ["/bin/bash"]

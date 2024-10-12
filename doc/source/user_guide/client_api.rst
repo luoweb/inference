@@ -46,20 +46,18 @@ Xinference Client
 
     client = Client("http://localhost:9997")
     # The chatglm2 model has the capabilities of "chat" and "embed".
-    model_uid = client.launch_model(model_name="chatglm2",
+    model_uid = client.launch_model(model_name="glm4-chat",
                                     model_engine="llama.cpp",
-                                    model_format="ggmlv3",
-                                    model_size_in_billions=6,
-                                    quantization="q4_0")
+                                    model_format="ggufv2",
+                                    model_size_in_billions=9,
+                                    quantization="Q4_K")
     model = client.get_model(model_uid)
 
-    chat_history = []
-    prompt = "What is the largest animal?"
+    messages = [{"role": "user", "content": "What is the largest animal?"}]
     # If the model has "generate" capability, then you can call the
     # model.generate API.
     model.chat(
-        prompt,
-        chat_history=chat_history,
+        messages,
         generate_config={"max_tokens": 1024}
     )
 

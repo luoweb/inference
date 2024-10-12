@@ -17,7 +17,7 @@ import logging
 import os
 import sys
 import warnings
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import click
 from xoscar.utils import get_next_port
@@ -25,7 +25,6 @@ from xoscar.utils import get_next_port
 from .. import __version__
 from ..client import RESTfulClient
 from ..client.restful.restful_client import (
-    RESTfulChatglmCppChatModelHandle,
     RESTfulChatModelHandle,
     RESTfulGenerateModelHandle,
 )
@@ -39,7 +38,6 @@ from ..constants import (
     XINFERENCE_LOG_MAX_BYTES,
 )
 from ..isolation import Isolation
-from ..types import ChatCompletionMessage
 from .utils import (
     get_config_dict,
     get_log_file,
@@ -751,7 +749,7 @@ def remove_cache(
     "-f",
     default=None,
     type=str,
-    help="Specify the format of the model, e.g. pytorch, ggmlv3, etc.",
+    help="Specify the format of the model, e.g. pytorch, ggufv2, etc.",
 )
 @click.option(
     "--quantization",
@@ -1211,13 +1209,12 @@ def model_chat(
     stream: bool,
     api_key: Optional[str],
 ):
-    # TODO: chat model roles may not be user and assistant.
     endpoint = get_endpoint(endpoint)
     client = RESTfulClient(base_url=endpoint, api_key=api_key)
     if api_key is None:
         client._set_token(get_stored_token(endpoint, client))
 
-    chat_history: "List[ChatCompletionMessage]" = []
+    messages: List[Dict] = []
     if stream:
         # TODO: when stream=True, RestfulClient cannot generate words one by one.
         # So use Client in temporary. The implementation needs to be changed to
@@ -1230,10 +1227,10 @@ def model_chat(
                 if prompt == "":
                     break
                 print("Assistant: ", end="", file=sys.stdout)
+                messages.append(dict(role="user", content=prompt))
                 response_content = ""
                 for chunk in model.chat(
-                    prompt=prompt,
-                    chat_history=chat_history,
+                    messages,
                     generate_config={"stream": stream, "max_tokens": max_tokens},
                 ):
                     delta = chunk["choices"][0]["delta"]
@@ -1243,10 +1240,7 @@ def model_chat(
                         response_content += delta["content"]
                         print(delta["content"], end="", flush=True, file=sys.stdout)
                 print("", file=sys.stdout)
-                chat_history.append(ChatCompletionMessage(role="user", content=prompt))
-                chat_history.append(
-                    ChatCompletionMessage(role="assistant", content=response_content)
-                )
+                messages.append(dict(role="assistant", content=response_content))
 
         model = client.get_model(model_uid=model_uid)
 
@@ -1268,29 +1262,24 @@ def model_chat(
                 task.exception()
     else:
         restful_model = client.get_model(model_uid=model_uid)
-        if not isinstance(
-            restful_model, (RESTfulChatModelHandle, RESTfulChatglmCppChatModelHandle)
-        ):
+        if not isinstance(restful_model, RESTfulChatModelHandle):
             raise ValueError(f"model {model_uid} has no chat method")
 
         while True:
             prompt = input("User: ")
             if prompt == "":
                 break
-            chat_history.append(ChatCompletionMessage(role="user", content=prompt))
+            messages.append({"role": "user", "content": prompt})
             print("Assistant: ", end="", file=sys.stdout)
             response = restful_model.chat(
-                prompt=prompt,
-                chat_history=chat_history,
+                messages,
                 generate_config={"stream": stream, "max_tokens": max_tokens},
             )
             if not isinstance(response, dict):
                 raise ValueError("chat result is not valid")
             response_content = response["choices"][0]["message"]["content"]
             print(f"{response_content}\n", file=sys.stdout)
-            chat_history.append(
-                ChatCompletionMessage(role="assistant", content=response_content)
-            )
+            messages.append(dict(role="assistant", content=response_content))
 
 
 @cli.command("vllm-models", help="Query and display models compatible with vLLM.")
@@ -1519,7 +1508,7 @@ def query_engine_by_model_name(
     "-f",
     type=str,
     required=True,
-    help="Specify the format of the model, e.g. pytorch, ggmlv3, etc.",
+    help="Specify the format of the model, e.g. pytorch, ggufv2, etc.",
 )
 @click.option(
     "--quantization",

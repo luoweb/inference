@@ -65,14 +65,16 @@ async def test_metrics_exporter_server(setup_cluster):
     client = Client(endpoint)
 
     model_uid = client.launch_model(
-        model_name="orca",
+        model_name="qwen1.5-chat",
         model_engine="llama.cpp",
-        model_size_in_billions=3,
+        model_size_in_billions="0_5",
         quantization="q4_0",
     )
 
     # Check the supervisor metrics collected the RESTful API.
-    supervisor_ref = await xo.actor_ref(supervisor_address, SupervisorActor.uid())
+    supervisor_ref = await xo.actor_ref(
+        supervisor_address, SupervisorActor.default_uid()
+    )
     response = requests.get(f"{endpoint}/metrics")
     assert response.ok
     assert "/v1/models" in response.text
@@ -84,7 +86,9 @@ async def test_metrics_exporter_server(setup_cluster):
     )
     response = requests.get(metrics_exporter_address)
     assert response.ok
-    assert 'xinference:input_tokens_total_counter{model="orca"} 1' in response.text
+    assert (
+        'xinference:input_tokens_total_counter{model="qwen1.5-chat"} 1' in response.text
+    )
 
 
 @pytest.fixture
@@ -105,9 +109,9 @@ async def test_disable_metrics_exporter_server(disable_metrics, setup_cluster):
     client = Client(endpoint)
 
     client.launch_model(
-        model_name="orca",
+        model_name="qwen1.5-chat",
         model_engine="llama.cpp",
-        model_size_in_billions=3,
+        model_size_in_billions="0_5",
         quantization="q4_0",
     )
 
@@ -128,16 +132,17 @@ async def test_metrics_exporter_data(setup_cluster):
     client = Client(endpoint)
 
     model_uid = client.launch_model(
-        model_name="orca",
+        model_name="qwen1.5-chat",
         model_engine="llama.cpp",
-        model_size_in_billions=3,
-        model_format="ggmlv3",
+        model_size_in_billions="0_5",
+        model_format="ggufv2",
         quantization="q4_0",
     )
 
     model = client.get_model(model_uid)
-    response = model.chat("write a poem.")
+    messages = [{"role": "user", "content": "write a poem."}]
+    response = model.chat(messages)
 
     response = requests.get(metrics_exporter_address)
     assert response.ok
-    assert 'format="ggmlv3",model="orca"' in response.text
+    assert 'format="ggufv2",model="qwen1.5-chat"' in response.text

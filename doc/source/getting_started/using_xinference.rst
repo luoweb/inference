@@ -243,11 +243,11 @@ or via Xinference's python client:
     from xinference.client import RESTfulClient
     client = RESTfulClient("http://127.0.0.1:9997")
     model = client.get_model("my-llama-2")
-    print(model.chat(
-        prompt="What is the largest animal?",
-        system_prompt="You are a helpful assistant.",
-        chat_history=[]
-    ))
+    model.chat(
+        messages=[
+            {"role": "user", "content": "Who won the world series in 2020?"}
+        ]
+    )
 
   .. code-tab:: json output
 
@@ -423,43 +423,6 @@ Replace ``<your_version>`` with Xinference versions, e.g. ``v0.10.3``, ``latest`
 
 For more docker usage, refer to :ref:`Using Docker Image <using_docker_image>`.
 
-
-Using Xinference On Kubernetes
-==============================
-
-To use Xinference on Kubernetes, `KubeBlocks <https://kubeblocks.io/>`_ is required to help the installation.
-
-The following steps assume Kubernetes is already installed.
-
-1. Download cli tool kbcli for KubeBlocks, see `install kbcli <https://kubeblocks.io/docs/preview/user_docs/installation/install-with-kbcli/install-kbcli/>`_.
-
-Make sure kbcli version is at least v0.7.1.
-
-2. Install KubeBlocks using kbcli command, see `install KubeBlocks with kbcli <https://kubeblocks.io/docs/preview/user_docs/installation/install-with-kbcli/install-kubeblocks-with-kbcli/>`_.
-
-3. Enable Xinference addon, run the following command:
-
-.. code-block:: bash
-
-  kbcli addon enable xinference
-
-4. Use kbcli to start Xinference cluster, run the following command:
-
-.. code-block:: bash
-
-  kbcli cluster create xinference
-
-If the Kubernetes node doesn't have GPU on it, run the command with extra flag:
-
-.. code-block:: bash
-
-  kbcli cluster create xinference --cpu-mode
-
-Use -h to read the help documentation for more options:
-
-.. code-block:: bash
-
-  kbcli cluster create xinference -h
 
 What's Next?
 ============

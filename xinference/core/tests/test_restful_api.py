@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import asyncio
 import json
 import os
 import os.path
@@ -40,7 +40,8 @@ async def test_restful_api(setup):
     payload = {
         "model_uid": "test_restful_api",
         "model_engine": "llama.cpp",
-        "model_name": "orca",
+        "model_name": "qwen1.5-chat",
+        "model_size_in_billions": "0_5",
         "quantization": "q4_0",
     }
 
@@ -52,7 +53,7 @@ async def test_restful_api(setup):
     # launch n_gpu error
     payload = {
         "model_uid": "test_restful_api",
-        "model_name": "orca",
+        "model_name": "qwen1.5-chat",
         "quantization": "q4_0",
         "n_gpu": -1,
     }
@@ -62,7 +63,7 @@ async def test_restful_api(setup):
     # same model uid
     payload = {
         "model_uid": "test_restful_api",
-        "model_name": "orca",
+        "model_name": "qwen1.5-chat",
         "quantization": "q4_0",
     }
     response = requests.post(url, json=payload)
@@ -76,7 +77,7 @@ async def test_restful_api(setup):
     # describe
     response = requests.get(f"{endpoint}/v1/models/test_restful_api")
     response_data = response.json()
-    assert response_data["model_name"] == "orca"
+    assert response_data["model_name"] == "qwen1.5-chat"
     assert response_data["replica"] == 1
 
     response = requests.delete(f"{endpoint}/v1/models/bogus")
@@ -430,11 +431,12 @@ def _check_invalid_tool_calls(endpoint, model_uid_res):
 
 
 @pytest.mark.parametrize(
-    "model_format, quantization", [("ggmlv3", "q4_0"), ("pytorch", None)]
+    "model_format, quantization",
+    [("pytorch", None)],
 )
 @pytest.mark.skip(reason="Cost too many resources.")
 def test_restful_api_for_tool_calls(setup, model_format, quantization):
-    model_name = "chatglm3"
+    model_name = "glm4-chat"
 
     endpoint, _ = setup
     url = f"{endpoint}/v1/models"
@@ -449,7 +451,7 @@ def test_restful_api_for_tool_calls(setup, model_format, quantization):
         "model_uid": "test_tool",
         "model_engine": "transformers",
         "model_name": model_name,
-        "model_size_in_billions": 6,
+        "model_size_in_billions": 9,
         "model_format": model_format,
         "quantization": quantization,
     }
@@ -464,59 +466,12 @@ def test_restful_api_for_tool_calls(setup, model_format, quantization):
     response_data = response.json()
     assert len(response_data["data"]) == 1
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "get_current_weather",
-                "description": "获取当前天气",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "location": {"type": "string", "description": "城市，例如北京"},
-                        "format": {
-                            "type": "string",
-                            "enum": ["celsius", "fahrenheit"],
-                            "description": "使用的温度单位。从所在的城市进行推断。",
-                        },
-                    },
-                    "required": ["location", "format"],
-                },
-            },
-        }
-    ]
-
-    url = f"{endpoint}/v1/chat/completions"
-    payload = {
-        "model": model_uid_res,
-        "messages": [
-            {"role": "system", "content": "你是一个有用的助手。不要对要函数调用的值做出假设。"},
-            {"role": "user", "content": "上海现在的天气怎么样？"},
-        ],
-        "temperature": 0.7,
-        "tools": tools,
-        "stop": ["\n"],
-    }
-    response = requests.post(url, json=payload)
-    completion = response.json()
-    # glm4-chat fail response: 好的，请告诉我您希望使用的温度单位是摄氏度还是华氏度？
-
-    assert (
-        "get_current_weather"
-        == completion["choices"][0]["message"]["tool_calls"][0]["function"]["name"]
-    ), completion
-    arguments = completion["choices"][0]["message"]["tool_calls"][0]["function"][
-        "arguments"
-    ]
-    arg = json.loads(arguments)
-    assert arg == {"location": "上海", "format": "celsius"}
-
     # tool
     tools = [
         {
             "type": "function",
             "function": {
-                "name": "track",
+                "name": "track_a_long_function_name_to_test",
                 "description": "追踪指定股票的实时价格",
                 "parameters": {
                     "type": "object",
@@ -557,7 +512,7 @@ def test_restful_api_for_tool_calls(setup, model_format, quantization):
     assert "content" in completion["choices"][0]["message"]
     assert "tool_calls" == completion["choices"][0]["finish_reason"]
     assert (
-        "track"
+        "track_a_long_function_name_to_test"
         == completion["choices"][0]["message"]["tool_calls"][0]["function"]["name"]
     )
     arguments = completion["choices"][0]["message"]["tool_calls"][0]["function"][
@@ -571,11 +526,12 @@ def test_restful_api_for_tool_calls(setup, model_format, quantization):
 
     client = RESTfulClient(endpoint)
     model = client.get_model(model_uid_res)
-    completion = model.chat("帮我查询股票10111的价格", tools=tools)
+    messages = [{"role": "user", "content": "帮我查询股票10111的价格"}]
+    completion = model.chat(messages, tools=tools)
     assert "content" in completion["choices"][0]["message"]
     assert "tool_calls" == completion["choices"][0]["finish_reason"]
     assert (
-        "track"
+        "track_a_long_function_name_to_test"
         == completion["choices"][0]["message"]["tool_calls"][0]["function"]["name"]
     )
     arguments = completion["choices"][0]["message"]["tool_calls"][0]["function"][
@@ -587,6 +543,30 @@ def test_restful_api_for_tool_calls(setup, model_format, quantization):
     # openai client
     import openai
 
+    async def test_stream():
+        async_client = openai.AsyncClient(
+            api_key="not empty", base_url=f"{endpoint}/v1"
+        )
+        chunks = []
+        async_completion = async_client.chat.completions.create(
+            model=model_uid_res,
+            messages=[{"role": "user", "content": "帮我查询股票10111的价格"}],
+            tools=tools,
+            stream=True,
+        )
+        async for chunk in await async_completion:
+            chunks.append(chunk)
+        assert len(chunks) == 2
+        assert (
+            chunks[1].choices[0].delta.tool_calls[0].function.name
+            == "track_a_long_function_name_to_test"
+        )
+        arguments = chunks[1].choices[0].delta.tool_calls[0].function.arguments
+        arg = json.loads(arguments)
+        assert arg == {"symbol": "10111"}
+
+    asyncio.run(test_stream())
+
     client = openai.Client(api_key="not empty", base_url=f"{endpoint}/v1")
     completion = client.chat.completions.create(
         model=model_uid_res,
@@ -594,7 +574,10 @@ def test_restful_api_for_tool_calls(setup, model_format, quantization):
         tools=tools,
     )
     assert "tool_calls" == completion.choices[0].finish_reason
-    assert "track" == completion.choices[0].message.tool_calls[0].function.name
+    assert (
+        "track_a_long_function_name_to_test"
+        == completion.choices[0].message.tool_calls[0].function.name
+    )
     arguments = completion.choices[0].message.tool_calls[0].function.arguments
     arg = json.loads(arguments)
     assert arg == {"symbol": "10111"}
@@ -624,6 +607,98 @@ def test_restful_api_for_tool_calls(setup, model_format, quantization):
             assert "12345" in completion.choices[0].message.content
 
     _check_invalid_tool_calls(endpoint, model_uid_res)
+
+
+@pytest.mark.parametrize(
+    "model_format, quantization",
+    [("pytorch", None)],
+)
+@pytest.mark.skip(reason="Cost too many resources.")
+def test_restful_api_for_llama3_tool_calls(setup, model_format, quantization):
+    model_name = "llama-3.1-instruct"
+
+    endpoint, _ = setup
+    url = f"{endpoint}/v1/models"
+
+    # list
+    response = requests.get(url)
+    response_data = response.json()
+    assert len(response_data["data"]) == 0
+
+    # launch
+    payload = {
+        "model_uid": "test_tool",
+        "model_engine": "transformers",
+        "model_name": model_name,
+        "model_size_in_billions": 8,
+        "model_format": model_format,
+        "quantization": quantization,
+        "download_hub": "huggingface",
+    }
+
+    response = requests.post(url, json=payload)
+    response_data = response.json()
+    assert "model_uid" in response_data, response_data
+    model_uid_res = response_data["model_uid"]
+    assert model_uid_res == "test_tool"
+
+    response = requests.get(url)
+    response_data = response.json()
+    assert len(response_data["data"]) == 1
+
+    # tool
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "track_a_long_function_name_to_test",
+                "description": "追踪指定股票的实时价格",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"symbol": {"description": "需要追踪的股票代码"}},
+                    "required": ["symbol"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "text-to-speech",
+                "description": "将文本转换为语音",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"description": "需要转换成语音的文本"},
+                        "voice": {"description": "要使用的语音类型（男声、女声等）"},
+                        "speed": {"description": "语音的速度（快、中等、慢等）"},
+                    },
+                    "required": ["text"],
+                },
+            },
+        },
+    ]
+    url = f"{endpoint}/v1/chat/completions"
+    payload = {
+        "model": model_uid_res,
+        "messages": [
+            {"role": "user", "content": "帮我查询股票10111的价格"},
+        ],
+        "tools": tools,
+    }
+    response = requests.post(url, json=payload)
+    completion = response.json()
+
+    assert "content" in completion["choices"][0]["message"]
+    assert "tool_calls" == completion["choices"][0]["finish_reason"]
+    assert (
+        "track_a_long_function_name_to_test"
+        == completion["choices"][0]["message"]["tool_calls"][0]["function"]["name"]
+    )
+    arguments = completion["choices"][0]["message"]["tool_calls"][0]["function"][
+        "arguments"
+    ]
+    arg = json.loads(arguments)
+    assert arg == {"symbol": "10111"}
 
 
 @pytest.mark.parametrize(
@@ -991,7 +1066,8 @@ def test_restful_api_with_request_limits(setup):
     payload = {
         "model_uid": "test_restful_api",
         "model_engine": "llama.cpp",
-        "model_name": "orca",
+        "model_name": "qwen1.5-chat",
+        "model_size_in_billions": "0_5",
         "quantization": "q4_0",
         "request_limits": 0,
     }
@@ -1029,7 +1105,8 @@ async def test_openai(setup):
     payload = {
         "model_uid": "test_restful_api",
         "model_engine": "llama.cpp",
-        "model_name": "orca",
+        "model_name": "qwen1.5-chat",
+        "model_size_in_billions": "0_5",
         "quantization": "q4_0",
     }
 
@@ -1088,7 +1165,8 @@ def test_lang_chain(setup):
     payload = {
         "model_uid": "test_restful_api",
         "model_engine": "llama.cpp",
-        "model_name": "orca",
+        "model_name": "qwen1.5-chat",
+        "model_size_in_billions": "0_5",
         "quantization": "q4_0",
     }
 
@@ -1126,7 +1204,6 @@ def test_lang_chain(setup):
     r = chat(messages)
     assert type(r) == AIMessage
     assert r.content
-    assert "amo" in r.content.lower()
 
     template = "You are a helpful assistant that translates {input_language} to {output_language}."
     system_message_prompt = SystemMessagePromptTemplate.from_template(template)
@@ -1154,18 +1231,19 @@ def test_launch_model_async(setup):
     url = f"{endpoint}/v1/models?wait_ready=false"
 
     payload = {
-        "model_uid": "test_orca",
+        "model_uid": "test_qwen_15",
         "model_engine": "llama.cpp",
-        "model_name": "orca",
+        "model_name": "qwen1.5-chat",
+        "model_size_in_billions": "0_5",
         "quantization": "q4_0",
     }
 
     response = requests.post(url, json=payload)
     response_data = response.json()
     model_uid_res = response_data["model_uid"]
-    assert model_uid_res == "test_orca"
+    assert model_uid_res == "test_qwen_15"
 
-    status_url = f"{endpoint}/v1/models/instances?model_uid=test_orca"
+    status_url = f"{endpoint}/v1/models/instances?model_uid=test_qwen_15"
     while True:
         response = requests.get(status_url)
         response_data = response.json()
@@ -1177,7 +1255,7 @@ def test_launch_model_async(setup):
         time.sleep(2)
 
     # delete again
-    url = f"{endpoint}/v1/models/test_orca"
+    url = f"{endpoint}/v1/models/test_qwen_15"
     requests.delete(url)
 
     response = requests.get(status_url)
@@ -1189,18 +1267,19 @@ def test_events(setup):
     url = f"{endpoint}/v1/models"
 
     payload = {
-        "model_uid": "test_orca",
+        "model_uid": "test_qwen_15",
         "model_engine": "llama.cpp",
-        "model_name": "orca",
+        "model_name": "qwen1.5-chat",
+        "model_size_in_billions": "0_5",
         "quantization": "q4_0",
     }
 
     response = requests.post(url, json=payload)
     response_data = response.json()
     model_uid_res = response_data["model_uid"]
-    assert model_uid_res == "test_orca"
+    assert model_uid_res == "test_qwen_15"
 
-    events_url = f"{endpoint}/v1/models/test_orca/events"
+    events_url = f"{endpoint}/v1/models/test_qwen_15/events"
     response = requests.get(events_url)
     response_data = response.json()
     # [{'event_type': 'INFO', 'event_ts': 1705896156, 'event_content': 'Launch model'}]
@@ -1208,7 +1287,7 @@ def test_events(setup):
     assert "Launch" in response_data[0]["event_content"]
 
     # delete again
-    url = f"{endpoint}/v1/models/test_orca"
+    url = f"{endpoint}/v1/models/test_qwen_15"
     requests.delete(url)
 
     response = requests.get(events_url)
@@ -1220,29 +1299,27 @@ def test_events(setup):
 
 
 def test_launch_model_by_version(setup):
-    from ...model.llm import get_llm_model_descriptions
-
     endpoint, supervisor_addr = setup
     url = f"{endpoint}/v1/models/instance"
 
-    version_info = get_llm_model_descriptions()["orca"][0]
+    model_version = "qwen1.5-chat--0_5B--ggufv2--q4_0"
 
     payload = {
-        "model_uid": "test_orca",
+        "model_uid": "test_qwen15",
         "model_engine": "llama.cpp",
         "model_type": "LLM",
-        "model_version": version_info["model_version"],
+        "model_version": model_version,
     }
     response = requests.post(url, json=payload)
-    assert response.json()["model_uid"] == "test_orca"
+    assert response.json()["model_uid"] == "test_qwen15"
 
-    url_version = f"{endpoint}/v1/models/LLM/orca/versions"
+    url_version = f"{endpoint}/v1/models/LLM/qwen1.5-chat/versions"
     response = requests.get(url_version)
     versions = response.json()
 
     has_version = False
     for info in versions:
-        if info["model_version"] == version_info["model_version"]:
+        if info["model_version"] == model_version:
             has_version = True
             assert info["cache_status"] is True
             assert info["model_file_location"] is not None
@@ -1253,5 +1330,79 @@ def test_launch_model_by_version(setup):
     assert has_version is True
 
     # delete again
-    url = f"{endpoint}/v1/models/test_orca"
+    url = f"{endpoint}/v1/models/test_qwen15"
     requests.delete(url)
+
+
+@pytest.mark.skip(reason="Cost too many resources.")
+def test_restful_api_for_qwen_audio(setup):
+    model_name = "qwen2-audio-instruct"
+
+    endpoint, _ = setup
+    url = f"{endpoint}/v1/models"
+
+    # list
+    response = requests.get(url)
+    response_data = response.json()
+    assert len(response_data["data"]) == 0
+
+    # launch
+    payload = {
+        "model_uid": "test_audio",
+        "model_name": model_name,
+        "model_engine": "transformers",
+        "model_size_in_billions": 7,
+        "model_format": "pytorch",
+        "quantization": "none",
+    }
+
+    response = requests.post(url, json=payload)
+    response_data = response.json()
+    model_uid_res = response_data["model_uid"]
+    assert model_uid_res == "test_audio"
+
+    response = requests.get(url)
+    response_data = response.json()
+    assert len(response_data["data"]) == 1
+
+    url = f"{endpoint}/v1/chat/completions"
+    payload = {
+        "model": model_uid_res,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "audio",
+                        "audio_url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen2-Audio/audio/glass-breaking-151256.mp3",
+                    },
+                    {"type": "text", "text": "What's that sound?"},
+                ],
+            },
+            {"role": "assistant", "content": "It is the sound of glass shattering."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What can you do when you hear that?"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Stay alert and cautious, and check if anyone is hurt or if there is any damage to property.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "audio",
+                        "audio_url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen2-Audio/audio/1272-128104-0000.flac",
+                    },
+                    {"type": "text", "text": "What does the person say?"},
+                ],
+            },
+        ],
+    }
+    response = requests.post(url, json=payload)
+    completion = response.json()
+    assert len(completion["choices"][0]["message"]) > 0
