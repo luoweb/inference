@@ -12,31 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import base64
 import contextlib
 import gc
 import inspect
 import itertools
 import logging
-import os
 import re
 import sys
-import time
-import uuid
 import warnings
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
-from io import BytesIO
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import PIL.Image
 import torch
 from PIL import ImageOps
 
-from ....constants import XINFERENCE_IMAGE_DIR
 from ....device_utils import get_available_device, move_model_to_available_device
-from ....types import Image, ImageList, LoRA
+from ....types import LoRA
 from ..sdapi import SDAPIDiffusionModelMixin
+from ..utils import handle_image_result
 
 if TYPE_CHECKING:
     from ....core.progress_tracker import Progressor
@@ -290,12 +283,14 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
             model.enable_sequential_cpu_offload()
         elif not self._kwargs.get("device_map"):
             logger.debug("Loading model to available device")
-            model = move_model_to_available_device(self._model)
-        # Recommended if your computer has < 64 GB of RAM
-        if self._kwargs.get("attention_slicing", True):
+            model = move_model_to_available_device(model)
+        if self._kwargs.get("attention_slicing", False):
             model.enable_attention_slicing()
         if self._kwargs.get("vae_tiling", False):
             model.enable_vae_tiling()
+
+    def get_max_num_images_for_batching(self):
+        return self._kwargs.get("max_num_images", 16)
 
     @staticmethod
     def _get_scheduler(model: Any, sampler_name: str):
@@ -476,28 +471,7 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
         if return_images:
             return images
 
-        if response_format == "url":
-            os.makedirs(XINFERENCE_IMAGE_DIR, exist_ok=True)
-            image_list = []
-            with ThreadPoolExecutor() as executor:
-                for img in images:
-                    path = os.path.join(XINFERENCE_IMAGE_DIR, uuid.uuid4().hex + ".jpg")
-                    image_list.append(Image(url=path, b64_json=None))
-                    executor.submit(img.save, path, "jpeg")
-            return ImageList(created=int(time.time()), data=image_list)
-        elif response_format == "b64_json":
-
-            def _gen_base64_image(_img):
-                buffered = BytesIO()
-                _img.save(buffered, format="jpeg")
-                return base64.b64encode(buffered.getvalue()).decode()
-
-            with ThreadPoolExecutor() as executor:
-                results = list(map(partial(executor.submit, _gen_base64_image), images))  # type: ignore
-                image_list = [Image(url=None, b64_json=s.result()) for s in results]  # type: ignore
-            return ImageList(created=int(time.time()), data=image_list)
-        else:
-            raise ValueError(f"Unsupported response format: {response_format}")
+        return handle_image_result(response_format, images)
 
     @classmethod
     def _filter_kwargs(cls, model, kwargs: dict):
