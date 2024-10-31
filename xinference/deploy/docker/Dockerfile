@@ -1,11 +1,11 @@
 # FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-devel
-FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-devel
+# FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-devel
 # ARG BASE_TAG=main-base
 # FROM winglian/axolotl-base:$BASE_TAG
 # FROM registry.cn-hangzhou.aliyuncs.com/roweb/axolotl-base:$BASE_TAG
 # FROM vllm/vllm-openai:latest
 # FROM python:3.11-slim 
-# FROM vllm/vllm-openai:v0.6.0
+FROM vllm/vllm-openai:v0.6.0
 
 COPY . /opt/inference
 WORKDIR /opt/inference
@@ -41,13 +41,13 @@ RUN pip install --upgrade -i "$PIP_INDEX" pip && \
     pip install -i "$PIP_INDEX" "diskcache>=5.6.1" "jinja2>=2.11.3" && \
     # use pre-built whl package for llama-cpp-python, otherwise may core dump when init llama in some envs
     # pip install "llama-cpp-python" -i https://abetlen.github.io/llama-cpp-python/whl/cu121 && \
-    pip install llama-cpp-python --prefer-binary --extra-index-url=https://jllllll.github.io/llama-cpp-python-cuBLAS-wheels/AVX2/cu118 && \
-    CMAKE_ARGS="-DGGML_CUBLAS=ON" pip install -i "$PIP_INDEX" -U "chatglm-cpp<0.4.0" && \
-#     pip install "llama-cpp-python>=0.2.82" -i https://abetlen.github.io/llama-cpp-python/whl/cu124 && \
+    # pip install llama-cpp-python --prefer-binary --extra-index-url=https://jllllll.github.io/llama-cpp-python-cuBLAS-wheels/AVX2/cu118 && \
+    # CMAKE_ARGS="-DGGML_CUBLAS=ON" pip install -i "$PIP_INDEX" -U "chatglm-cpp<0.4.0" && \
+    pip install "llama-cpp-python>=0.2.82" -i https://abetlen.github.io/llama-cpp-python/whl/cu121 && \
     pip install -i "$PIP_INDEX" --upgrade-strategy only-if-needed -r /opt/inference/xinference/deploy/docker/requirements.txt && \
     pip install -i "$PIP_INDEX" --no-deps sglang && \
     pip uninstall flashinfer -y && \
-    pip install flashinfer -i https://flashinfer.ai/whl/cu124/torch2.4 && \
+    pip install flashinfer -i https://flashinfer.ai/whl/cu121 /torch2.4 && \
     cd /opt/inference && \
     python3 setup.py build_web && \
     git restore . && \

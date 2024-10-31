@@ -1,27 +1,28 @@
-version: '3.8'
+# version: '3.8'
 
 services:
   xinference:
-    image: xprobe/xinference:latest
+    image: registry.cn-hangzhou.aliyuncs.com/roweb/xinference:latest
     ports:
       - "9997:9997"
-#    volumes:
+    volumes:
 #      # Replace <xinference_home> with your xinference home path on the host machine
-#      - <xinference_home>:/root/.xinference
+      - ./xinference_home:/root/.xinference
 #      # Replace <huggingface_cache_dir> with your huggingface cache path, default is
 #      # <home_path>/.cache/huggingface
-#      - <huggingface_cache_dir>:/root/.cache/huggingface
+      - ./huggingface_cache_dir:/root/.cache/huggingface
 #      # If models are downloaded from modelscope, replace <huggingface_cache_dir> with
 #      # your modelscope cache path, default is <home_path>/.cache/modelscope
-#      - <modelscope_cache_dir>:/root/.cache/modelscope
-#    environment:
+      - ./modelscope_cache_dir:/root/.cache/modelscope
+    environment:
 #      # add envs here. Here's an example, if you want to download model from modelscope
-#      - XINFERENCE_MODEL_SRC=modelscope
-    command: xinference-local --host 0.0.0.0 --port 9997
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: [gpu]
-              driver: nvidia
-              count: all
+      - XINFERENCE_MODEL_SRC=modelscope
+    command: tail -f /dev/null
+    # command: xinference-local --host 0.0.0.0 --port 9997
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
+    #           driver: nvidia
+    #           count: all
