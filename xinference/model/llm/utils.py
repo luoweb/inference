@@ -16,7 +16,6 @@ import base64
 import functools
 import json
 import logging
-import os
 import re
 import time
 import typing
@@ -42,19 +41,13 @@ from ...types import (
     ChatCompletion,
     ChatCompletionChoice,
     ChatCompletionChunk,
+    ChatCompletionChunkChoice,
     ChatCompletionChunkDelta,
     ChatCompletionMessage,
     Completion,
     CompletionChoice,
     CompletionChunk,
     CompletionUsage,
-)
-from .llm_family import (
-    LlamaCppLLMSpecV1,
-    LLMFamilyV1,
-    LLMSpecV1,
-    _get_cache_dir,
-    get_cache_status,
 )
 from .reasoning_parser import ReasoningParser
 
@@ -68,6 +61,11 @@ QWEN_TOOL_CALL_FAMILY = [
     "qwen2-moe-instruct",
     "qwen2.5-instruct",
     "qwen2.5-coder-instruct",
+    "XiYanSQL-QwenCoder-2504",
+    "QwQ-32B",
+    "qwen3",
+    "HuatuoGPT-o1-Qwen2.5",
+    "DianJin-R1",
 ]
 
 GLM4_TOOL_CALL_FAMILY = [
@@ -77,6 +75,7 @@ GLM4_TOOL_CALL_FAMILY = [
 
 LLAMA3_TOOL_CALL_FAMILY = [
     "llama-3.1-instruct",
+    "HuatuoGPT-o1-LLaMA-3.1",
 ]
 
 DEEPSEEK_TOOL_CALL_FAMILY = [
@@ -143,6 +142,7 @@ class ChatModelMixin:
                     add_generation_prompt=True,
                     **kwargs,
                 )
+                logger.debug("Prompt: %s", full_context)
                 return full_context
             except Exception as e:
                 logger.warning(
@@ -153,6 +153,34 @@ class ChatModelMixin:
             # build from jinja
             # Compilation function uses a cache to avoid recompiling the same template
             return self._build_from_raw_template(messages, chat_template, **kwargs)
+
+    @staticmethod
+    def _get_chat_template_kwargs_from_generate_config(
+        generate_config: Optional[Union[dict, Any]],
+        reasoning_parser: Optional[ReasoningParser] = None,
+    ) -> Optional[dict]:
+        if generate_config and "chat_template_kwargs" in generate_config:
+            kwargs = generate_config["chat_template_kwargs"]
+            if isinstance(kwargs, str):
+                try:
+                    return json.loads(kwargs)
+                except json.JSONDecodeError:
+                    raise TypeError(
+                        f"`chat_template_kwargs` should be json parsable, "
+                        f"got: {kwargs}"
+                    )
+            elif isinstance(kwargs, dict):
+                return kwargs
+            else:
+                raise TypeError(
+                    f"`chat_template_kwargs` but be a JSON parsable str "
+                    f"or dict, got: {kwargs}"
+                )
+        elif reasoning_parser and not reasoning_parser.enable_thinking:
+            # hybrid model like qwen3,
+            # disabled thinking
+            return {"enable_thinking": False}
+        return None
 
     @staticmethod
     def convert_messages_with_content_list_to_str_conversion(
@@ -182,7 +210,7 @@ class ChatModelMixin:
         _messages = [x for x in messages]  # copy for not modifying the origin messages
         _messages.append({"role": "assistant", "content": ""})
 
-        if model_family == "internvl2":
+        if "internvl" in model_family.lower():
             system_prompt = (
                 messages[0]["content"] if messages[0]["role"] == "system" else ""
             )
@@ -257,7 +285,7 @@ class ChatModelMixin:
             and "delta" in choices[0]
         ):
             if choices[0]["finish_reason"] is None:
-                if reasoning_parser is not None:
+                if reasoning_parser and reasoning_parser.check_content_parser():
                     # process parsing reasoning content
                     assert previous_texts is not None
                     delta = choices[0]["delta"]  # type: ignore
@@ -274,7 +302,7 @@ class ChatModelMixin:
                 delta = choices[0]["delta"]  # type: ignore
                 if "content" not in delta:
                     delta["content"] = ""  # type: ignore
-                if reasoning_parser is not None:
+                if reasoning_parser and reasoning_parser.check_content_parser():
                     delta["reasoning_content"] = None  # type: ignore
             # Already a ChatCompletionChunk, we don't need to convert chunk.
             return cast(ChatCompletionChunk, chunk)
@@ -283,7 +311,7 @@ class ChatModelMixin:
         for i, choice in enumerate(choices):  # type: ignore
             delta = ChatCompletionChunkDelta()
             if "text" in choice and choice["finish_reason"] is None:
-                if reasoning_parser is None:
+                if not reasoning_parser or not reasoning_parser.check_content_parser():
                     delta["content"] = choice["text"]
                 else:
                     assert previous_texts is not None
@@ -296,7 +324,7 @@ class ChatModelMixin:
                     previous_texts[-1] = current_text
             elif "text" in choice and choice["finish_reason"] is not None:
                 delta["content"] = choice["text"]
-                if reasoning_parser is not None:
+                if reasoning_parser and reasoning_parser.check_content_parser():
                     delta["reasoning_content"] = None
             elif "tool_calls" in choice:
                 delta["tool_calls"] = choice["tool_calls"]
@@ -310,7 +338,9 @@ class ChatModelMixin:
         assert choices is not None
         usage = (
             chunk["usage"]
-            if choices[0]["finish_reason"] is not None and reasoning_parser is not None
+            if choices[0]["finish_reason"] is not None
+            and reasoning_parser
+            and reasoning_parser.check_content_parser()
             else None
         )
         chat_chunk = {
@@ -328,28 +358,32 @@ class ChatModelMixin:
         cls,
         chunk: CompletionChunk,
         reasoning_parser: Optional[ReasoningParser] = None,
-    ) -> ChatCompletionChunk:
-        choices_list = []
+    ) -> List[ChatCompletionChunk]:
+        choices_list: List[ChatCompletionChunkChoice] = []
+        chunks: List[ChatCompletionChunk] = []
         for i, choice in enumerate(chunk["choices"]):
             delta = ChatCompletionChunkDelta(role="assistant", content="")
-            if reasoning_parser is not None:
+            if reasoning_parser and reasoning_parser.check_content_parser():
                 delta["content"] = None
                 delta["reasoning_content"] = ""
             choices_list.append(
-                {
-                    "index": i,
-                    "delta": delta,
-                    "finish_reason": None,
-                }
+                ChatCompletionChunkChoice(
+                    index=i,
+                    delta=delta,
+                    finish_reason=None,
+                )
             )
-        chat_chunk = {
-            "id": "chat" + chunk["id"],
-            "model": chunk["model"],
-            "created": chunk["created"],
-            "object": "chat.completion.chunk",
-            "choices": choices_list,
-        }
-        return cast(ChatCompletionChunk, chat_chunk)
+        chat_chunk = ChatCompletionChunk(
+            id="chat" + chunk["id"],
+            model=chunk["model"],
+            created=chunk["created"],
+            object="chat.completion.chunk",
+            choices=choices_list,
+        )
+        chunks.append(chat_chunk)
+        if reasoning_parser:
+            chunks.extend(reasoning_parser.prepare_first_reasoning_content_chunk(chunk))
+        return chunks
 
     @classmethod
     def _get_final_chat_completion_chunk(
@@ -374,6 +408,8 @@ class ChatModelMixin:
         reasoning_parse: Optional[ReasoningParser] = None,
     ) -> Iterator[ChatCompletionChunk]:
         previous_texts = [""]
+        if reasoning_parse:
+            chunks = reasoning_parse.prepare_reasoning_content_sync(chunks)
         for _, chunk in enumerate(chunks):
             # usage
             choices = chunk.get("choices")
@@ -421,6 +457,9 @@ class ChatModelMixin:
         reasoning_parser: Optional[ReasoningParser] = None,
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
         previous_texts = [""]
+        # Process chunks
+        if reasoning_parser:
+            chunks = reasoning_parser.prepare_reasoning_content_streaming(chunks)
         async for chunk in chunks:
             choices = chunk.get("choices")
             if not choices:
@@ -436,19 +475,25 @@ class ChatModelMixin:
     def _to_chat_completion(
         completion: Completion, reasoning_parser: Optional[ReasoningParser] = None
     ) -> ChatCompletion:
+        # prepare reasoning content
+        if reasoning_parser:
+            completion = reasoning_parser.prepare_reasoning_content(completion)
+
         if completion.get("object") == "chat.completion" and completion.get("choices"):
             # Already a ChatCompletion
-            if reasoning_parser is not None:
-                for choice in completion["choices"]:
-                    message = choice["message"]  # type: ignore
-                    text = message["content"]
+            for choice in completion["choices"]:
+                message = choice["message"]  # type: ignore
+                text = message["content"]  # Original content from the message
+
+                if reasoning_parser and reasoning_parser.check_content_parser():
+                    # Parse into reasoning and content parts
                     (
-                        reasoning_content,
-                        content,
+                        reasoning_val,
+                        content_val,
                     ) = reasoning_parser.extract_reasoning_content(text)
-                    message["content"] = content
-                    if reasoning_content is not None:
-                        message["reasoning_content"] = reasoning_content
+                    message["content"] = content_val
+                    if reasoning_val is not None:
+                        message["reasoning_content"] = reasoning_val
             return cast(ChatCompletion, completion)
 
         choices = []
@@ -456,7 +501,7 @@ class ChatModelMixin:
             content = choice["text"]
             reasoning_content = None
 
-            if reasoning_parser is not None:
+            if reasoning_parser and reasoning_parser.check_content_parser():
                 reasoning_content, content = reasoning_parser.extract_reasoning_content(  # type: ignore
                     choice
                 )
@@ -503,14 +548,24 @@ class ChatModelMixin:
     @classmethod
     def _handle_qwen_tool_result(cls, text: str) -> List[Tuple]:
         text: str = text.strip()  # type: ignore
-        contents: List[str] = text.split(QWEN_TOOL_CALL_SYMBOLS[1])
+
+        def split_into_blocks(text: str) -> list[str]:
+            # Match blocks starting with <think> or <tool_call> and ending with </think> or </tool_call>
+            pattern = r"(<(think|tool_call)>.*?</\2>)"
+            blocks = re.findall(pattern, text, re.DOTALL)
+            return [match[0] for match in blocks]
+
+        contents = split_into_blocks(text)
         results: List[Tuple] = []
         for content in contents:
             content = content.strip()
             if content:
-                pos = content.find(QWEN_TOOL_CALL_SYMBOLS[0])
-                if pos != -1:
-                    content = content[pos + len(QWEN_TOOL_CALL_SYMBOLS[0]) :]
+                pos1 = content.find(QWEN_TOOL_CALL_SYMBOLS[0])
+                if pos1 != -1:
+                    content = content[pos1 + len(QWEN_TOOL_CALL_SYMBOLS[0]) :]
+                pos2 = content.find(QWEN_TOOL_CALL_SYMBOLS[1])
+                if pos2 != -1:
+                    content = content[:pos2]
                 content = content.strip()
                 try:
                     res = json.loads(content)
@@ -525,8 +580,12 @@ class ChatModelMixin:
         return results
 
     @classmethod
-    def _eval_qwen_chat_arguments(cls, c) -> List[Tuple]:
+    def _eval_qwen_chat_arguments(
+        cls, c, tool_call_text: Optional[str] = None
+    ) -> List[Tuple]:
         text = c["choices"][0]["text"]
+        if tool_call_text:
+            text = tool_call_text
         return cls._handle_qwen_tool_result(text)
 
     @classmethod
@@ -607,12 +666,14 @@ class ChatModelMixin:
         return results
 
     @classmethod
-    def _eval_tool_arguments(cls, model_family, c):
+    def _eval_tool_arguments(
+        cls, model_family, c, tool_call_text: Optional[str] = None
+    ):
         family = model_family.model_family or model_family.model_name
         if family in GLM4_TOOL_CALL_FAMILY:
             result = cls._eval_glm_chat_arguments(c)
         elif family in QWEN_TOOL_CALL_FAMILY:
-            result = cls._eval_qwen_chat_arguments(c)
+            result = cls._eval_qwen_chat_arguments(c, tool_call_text)
         elif family in LLAMA3_TOOL_CALL_FAMILY:
             result = cls._eval_llama3_chat_arguments(c)
         elif family in DEEPSEEK_TOOL_CALL_FAMILY:
@@ -632,15 +693,17 @@ class ChatModelMixin:
         c,
         chunk_id=None,
         reasoning_parser: Optional[ReasoningParser] = None,
+        tool_call_text: Optional[str] = None,
     ):
         _id = chunk_id if chunk_id is not None else str(uuid.uuid4())
-        tool_result = cls._eval_tool_arguments(model_family, c)
+        tool_result = cls._eval_tool_arguments(model_family, c, tool_call_text)
         tool_calls = []
         failed_contents = []
         for content, func, args in tool_result:
             if func:
                 tool_calls.append(
                     {
+                        "index": 0,
                         "id": f"call_{_id}",
                         "type": "function",
                         "function": {
@@ -653,20 +716,18 @@ class ChatModelMixin:
                 failed_contents.append(content)
         finish_reason = "tool_calls" if tool_calls else "stop"
 
-        reasoning_content = None
         content = ". ".join(failed_contents) if failed_contents else None
-        if reasoning_parser is not None:
-            reasoning_content, content = reasoning_parser.extract_reasoning_content(  # type: ignore
-                content
-            )
+
+        # fix: qwen tool_call content field return null
+        family = model_family.model_family or model_family.model_name
+        if tool_calls and family in QWEN_TOOL_CALL_FAMILY and content is None:
+            content = ""
+
         d = {
             "role": "assistant",
             "content": content,
             "tool_calls": tool_calls,
         }
-        # add only reasoning_content is None
-        if reasoning_content is not None:
-            d["reasoning_content"] = reasoning_content
 
         try:
             usage = c.get("usage")
@@ -701,7 +762,17 @@ class ChatModelMixin:
         c,
         reasoning_parser: Optional[ReasoningParser] = None,
     ):
+        if reasoning_parser:
+            c = reasoning_parser.prepare_reasoning_content(c)
         _id = str(uuid.uuid4())
+        reasoning_content = None
+        if reasoning_parser and reasoning_parser.check_content_parser():
+            text = c["choices"][0]["text"]
+            reasoning_content, content = reasoning_parser.extract_reasoning_content(
+                text
+            )
+            c["choices"][0]["text"] = content
+
         tool_result = cls._eval_tool_arguments(model_family, c)
 
         tool_calls = []
@@ -719,15 +790,17 @@ class ChatModelMixin:
                     }
                 )
             else:
-                failed_contents.append(content)
+                if content:
+                    failed_contents.append(content)
         finish_reason = "tool_calls" if tool_calls else "stop"
 
-        reasoning_content = None
         content = ". ".join(failed_contents) if failed_contents else None
-        if reasoning_parser is not None:
-            reasoning_content, content = reasoning_parser.extract_reasoning_content(  # type: ignore
-                content
-            )
+
+        # fix: qwen tool_call content field return null
+        family = model_family.model_family or model_family.model_name
+        if tool_calls and family in QWEN_TOOL_CALL_FAMILY and content is None:
+            content = ""
+
         m = {
             "role": "assistant",
             "content": content,
@@ -799,38 +872,13 @@ class ChatModelMixin:
         return transformed_messages
 
 
-def get_file_location(
-    llm_family: LLMFamilyV1, spec: LLMSpecV1, quantization: str
-) -> Tuple[str, bool]:
-    cache_dir = _get_cache_dir(
-        llm_family, spec, quantization, create_if_not_exist=False
-    )
-    cache_status = get_cache_status(llm_family, spec, quantization)
-    if isinstance(cache_status, list):
-        is_cached = None
-        for q, cs in zip(spec.quantizations, cache_status):
-            if q == quantization:
-                is_cached = cs
-                break
-    else:
-        is_cached = cache_status
-    assert isinstance(is_cached, bool)
-
-    if spec.model_format in ["pytorch", "gptq", "awq", "fp8", "mlx"]:
-        return cache_dir, is_cached
-    elif spec.model_format in ["ggufv2"]:
-        assert isinstance(spec, LlamaCppLLMSpecV1)
-        filename = spec.model_file_name_template.format(quantization=quantization)
-        model_path = os.path.join(cache_dir, filename)
-        return model_path, is_cached
-    else:
-        raise ValueError(f"Not supported model format {spec.model_format}")
-
-
 def get_model_version(
-    llm_family: LLMFamilyV1, llm_spec: LLMSpecV1, quantization: str
+    model_name: str,
+    model_format: str,
+    model_size_in_billions: Union[str, int],
+    quantization: str,
 ) -> str:
-    return f"{llm_family.model_name}--{llm_spec.model_size_in_billions}B--{llm_spec.model_format}--{quantization}"
+    return f"{model_name}--{model_size_in_billions}B--{model_format}--{quantization}"
 
 
 def _decode_image(_url):

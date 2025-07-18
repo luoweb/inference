@@ -806,6 +806,14 @@ def remove_cache(
     multiple=True,
 )
 @click.option(
+    "--quantization-config",
+    "-qc",
+    "quantization_config",
+    type=(str, str),
+    multiple=True,
+    help="bnb quantization config for `transformers` engine.",
+)
+@click.option(
     "--worker-ip",
     default=None,
     type=str,
@@ -853,6 +861,7 @@ def model_launch(
     trust_remote_code: bool,
     api_key: Optional[str],
     model_path: Optional[str],
+    quantization_config: Optional[Tuple],
 ):
     kwargs = {}
     for i in range(0, len(ctx.args), 2):
@@ -883,6 +892,12 @@ def model_launch(
         _n_gpu = n_gpu
     else:
         _n_gpu = int(n_gpu)
+
+    bnb_quantization_config = (
+        {k: handle_click_args_type(v) for k, v in dict(quantization_config).items()}
+        if quantization_config
+        else None
+    )
 
     image_lora_load_params = (
         {k: handle_click_args_type(v) for k, v in dict(image_lora_load_kwargs).items()}
@@ -929,6 +944,8 @@ def model_launch(
 
     # do not wait for launching.
     kwargs["wait_ready"] = False
+    if bnb_quantization_config:
+        kwargs["quantization_config"] = {**bnb_quantization_config}
 
     model_uid = client.launch_model(
         model_name=model_name,
@@ -1298,8 +1315,12 @@ def model_chat(
                     if "content" not in delta:
                         continue
                     else:
-                        response_content += delta["content"]
-                        print(delta["content"], end="", flush=True, file=sys.stdout)
+                        # The first chunk of stream output may have no content (None). Related PRs:
+                        # https://github.com/ggml-org/llama.cpp/pull/13634
+                        # https://github.com/ggml-org/llama.cpp/pull/12379
+                        content = delta["content"] or ""
+                        response_content += content
+                        print(content, end="", flush=True, file=sys.stdout)
                 print("", file=sys.stdout)
                 messages.append(dict(role="assistant", content=response_content))
 

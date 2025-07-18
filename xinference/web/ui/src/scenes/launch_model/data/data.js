@@ -20,6 +20,9 @@ export const llmAllDataKey = [
   'gguf_model_path',
   'cpu_offload',
   'peft_model_config',
+  'quantization_config',
+  'enable_thinking',
+  'multimodal_projectors',
 ]
 
 export const additionalParameterTipList = {
@@ -58,25 +61,41 @@ export const additionalParameterTipList = {
   'mlx': ['cache_limit_gb', 'max_kv_size'],
 }
 
+export const quantizationParametersTipList = [
+  'load_in_8bit',
+  'load_in_4bit',
+  'llm_int8_threshold',
+  'llm_int8_skip_modules',
+  'llm_int8_enable_fp32_cpu_offload',
+  'llm_int8_has_fp16_weight',
+  'bnb_4bit_compute_dtype',
+  'bnb_4bit_quant_type',
+  'bnb_4bit_use_double_quant',
+  'bnb_4bit_quant_storage',
+]
+
 export const featureModels = [
   {
     type: 'llm',
     feature_models: [
-      'deepseek-v3',
-      'deepseek-r1',
-      'deepseek-r1-distill-qwen',
+      'qwen3',
+      'deepseek-v3-0324',
+      'deepseek-r1-0528',
+      'deepseek-r1-0528-qwen3',
       'deepseek-r1-distill-llama',
       'qwen2.5-instruct',
       'qwen2.5-vl-instruct',
       'glm4-0414',
       'QwQ-32B',
-      'llama-3.1-instruct',
       'gemma-3-it',
     ],
   },
   {
     type: 'embedding',
     feature_models: [
+      'Qwen3-Embedding-0.6B',
+      'Qwen3-Embedding-4B',
+      'Qwen3-Embedding-8B',
       'bge-large-zh-v1.5',
       'bge-large-en-v1.5',
       'bge-m3',
@@ -92,9 +111,11 @@ export const featureModels = [
     type: 'image',
     feature_models: [
       'FLUX.1-dev',
+      'FLUX.1-Kontext-dev',
       'FLUX.1-schnell',
       'sd3.5-large',
       'HunyuanDiT-v1.2',
+      'cogview4',
       'sd3.5-medium',
     ],
   },

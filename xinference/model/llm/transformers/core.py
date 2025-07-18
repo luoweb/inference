@@ -16,7 +16,7 @@ import json
 import logging
 import os
 from functools import lru_cache
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 import torch
 
@@ -37,46 +37,25 @@ from ....types import (
     PytorchModelConfig,
 )
 from ...utils import select_device
-from ..core import LLM
-from ..llm_family import LLMFamilyV1, LLMSpecV1
+from ..core import LLM, chat_context_var
+from ..llm_family import LLMFamilyV2, LLMSpecV1
 from ..utils import (
     DEEPSEEK_TOOL_CALL_FAMILY,
     LLAMA3_TOOL_CALL_FAMILY,
     QWEN_TOOL_CALL_FAMILY,
     ChatModelMixin,
 )
-from .utils import get_context_length, get_max_src_len, pad_prefill_tokens
+from .utils import (
+    _get_pad_param,
+    get_context_length,
+    get_max_src_len,
+    pad_prefill_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
-NON_DEFAULT_MODEL_LIST: List[str] = [
-    "opt",
-    "glm4-chat",
-    "glm4-chat-1m",
-    "internlm2-chat",
-    "internlm2.5-chat",
-    "qwen-vl-chat",
-    "OmniLMM",
-    "yi-vl-chat",
-    "deepseek-vl-chat",
-    "cogvlm2",
-    "cogvlm2-video-llama3-chat",
-    "MiniCPM-Llama3-V-2_5",
-    "MiniCPM-V-2.6",
-    "glm-4v",
-    "qwen2-audio",
-    "qwen2-audio-instruct",
-    "deepseek-v2",
-    "deepseek-v2-chat",
-    "deepseek-v2.5",
-    "deepseek-v2-chat-0628",
-    "glm-edge-v",
-    "QvQ-72B-Preview",
-    "cogagent",
-    "gemma-3-1b-it",
-    "gemma-3-it",
-    "deepseek-vl2",
-]
+# !!!!! Do not add model_name to this list, use `register_non_default_model` below instead!
+NON_DEFAULT_MODEL_LIST: List[str] = []
 
 
 # Define the decorator to support multiple names registration
@@ -113,14 +92,12 @@ class PytorchModel(LLM):
     def __init__(
         self,
         model_uid: str,
-        model_family: "LLMFamilyV1",
-        model_spec: "LLMSpecV1",
-        quantization: str,
+        model_family: "LLMFamilyV2",
         model_path: str,
         pytorch_model_config: Optional[PytorchModelConfig] = None,
         peft_model: Optional[List[LoRA]] = None,
     ):
-        super().__init__(model_uid, model_family, model_spec, quantization, model_path)
+        super().__init__(model_uid, model_family, model_path)
         self._use_fast_tokenizer = True
         self._pytorch_model_config: PytorchModelConfig = self._sanitize_model_config(
             pytorch_model_config
@@ -142,6 +119,7 @@ class PytorchModel(LLM):
         pytorch_model_config.setdefault("max_num_seqs", 16)
         pytorch_model_config.setdefault("enable_tensorizer", False)
         pytorch_model_config.setdefault("reasoning_content", False)
+        pytorch_model_config.setdefault("quantization_config", {})
         return pytorch_model_config
 
     def _sanitize_generate_config(
@@ -264,16 +242,39 @@ class PytorchModel(LLM):
                     f"PEFT adaptor '{peft_model.lora_name}' successfully loaded for model '{self.model_uid}'."
                 )
 
-    def load(self):
-        try:
-            import torch
-        except ImportError:
-            raise ImportError(
-                f"Failed to import module 'torch'. Please make sure 'torch' is installed.\n\n"
+    def apply_bnb_quantization(
+        self, kwargs: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        model_format = self.model_spec.model_format
+        _kwargs = kwargs if kwargs is not None else {}
+        if model_format == "pytorch":
+            quantization_config = self._pytorch_model_config.get(
+                "quantization_config", {}
             )
-        from .compression import load_compress_model
+            if quantization_config:
+                # If `load_in_4bit` is enabled, apply default quantization presets.
+                if quantization_config.get("load_in_4bit", False):
+                    quantization_config.setdefault(
+                        "bnb_4bit_compute_dtype", torch.float16
+                    )
+                    quantization_config.setdefault("bnb_4bit_use_double_quant", True)
+                    quantization_config.setdefault(
+                        "llm_int8_skip_modules",
+                        [
+                            "lm_head",
+                            "encoder",
+                            "EncDecAttention",
+                        ],
+                    )
 
-        quantization = self.quantization
+                from transformers import BitsAndBytesConfig
+
+                _kwargs["quantization_config"] = BitsAndBytesConfig(
+                    **quantization_config
+                )
+        return _kwargs
+
+    def load(self):
         num_gpus = gpu_count()
         device = self._pytorch_model_config.get("device", "auto")
         self._pytorch_model_config["device"] = select_device(device)
@@ -294,7 +295,6 @@ class PytorchModel(LLM):
         kwargs["trust_remote_code"] = self._pytorch_model_config.get(
             "trust_remote_code"
         )
-        model_format = self.model_spec.model_format
 
         is_device_map_auto = False
 
@@ -310,52 +310,18 @@ class PytorchModel(LLM):
             }
             kwargs["max_memory"] = max_memory
 
-        if quantization != "none" and model_format == "pytorch":
-            if self._device == "cuda" and self._is_linux():
-                kwargs["device_map"] = "auto"
-                is_device_map_auto = True
-                if quantization == "4-bit":
-                    kwargs["load_in_4bit"] = True
-                    kwargs["bnb_4bit_compute_dtype"] = torch.float16
-                    kwargs["bnb_4bit_use_double_quant"] = True
-                    kwargs["llm_int8_skip_modules"] = [
-                        "lm_head",
-                        "encoder",
-                        "EncDecAttention",
-                    ]
-                elif quantization == "8-bit":
-                    kwargs["load_in_8bit"] = True
-                else:
-                    raise ValueError(
-                        f"Quantization {quantization} is not supported in temporary"
-                    )
-            else:
-                if num_gpus != 1 and self._device == "cuda":
-                    raise ValueError(f"Quantization is not supported for multi-gpu")
-                elif quantization != "8-bit":
-                    raise ValueError(
-                        f"Only 8-bit quantization is supported if it is not linux system or cuda device"
-                    )
-                else:
-                    (
-                        self._model,
-                        self._tokenizer,
-                    ) = load_compress_model(
-                        model_path=self.model_path,
-                        device=self._device,
-                        torch_dtype=kwargs["torch_dtype"],
-                        use_fast=self._use_fast_tokenizer,
-                        revision=kwargs["revision"],
-                    )
-                    logger.debug(f"Model Memory: {self._model.get_memory_footprint()}")
-                    return
+        # handle bnb quantization
+        kwargs = self.apply_bnb_quantization(kwargs)
 
         if num_gpus > 0 and is_hf_accelerate_supported(self._device):
             kwargs.update({"device_map": "auto"})
             is_device_map_auto = True
 
         reasoning_content = self._pytorch_model_config.pop("reasoning_content")
-        self.prepare_parse_reasoning_content(reasoning_content)
+        enable_thinking = self._pytorch_model_config.pop("enable_thinking", False)
+        self.prepare_parse_reasoning_content(
+            reasoning_content, enable_thinking=enable_thinking
+        )
 
         if self._check_tensorizer_integrity():
             self._model, self._tokenizer = self._load_tensorizer(**kwargs)
@@ -377,7 +343,7 @@ class PytorchModel(LLM):
 
     @classmethod
     def match_json(
-        cls, llm_family: "LLMFamilyV1", llm_spec: "LLMSpecV1", quantization: str
+        cls, llm_family: "LLMFamilyV2", llm_spec: "LLMSpecV1", quantization: str
     ) -> bool:
         if llm_spec.model_format not in ["pytorch", "gptq", "awq"]:
             return False
@@ -564,6 +530,36 @@ class PytorchModel(LLM):
     def prepare_sanitize_generate_config(self, req: InferenceRequest):
         return self._sanitize_generate_config(req.generate_config)
 
+    def merge_kv_cache(self, past_cache, new_cache):
+        from torch.nn.functional import pad
+        from transformers import DynamicCache
+
+        _, seq_len_idx = self.get_batch_size_and_seq_len_indexes_from_kv()
+        past_seq_len = past_cache[0][0].shape[seq_len_idx]
+        new_seq_len = new_cache[0][0].shape[seq_len_idx]
+        if past_seq_len != new_seq_len:
+            padding_target = new_cache if past_seq_len > new_seq_len else past_cache
+            padding_len = abs(past_seq_len - new_seq_len)
+            pad_param = _get_pad_param(seq_len_idx, padding_len)
+            for idx in range(len(padding_target)):
+                k = padding_target.key_cache[idx]
+                v = padding_target.value_cache[idx]
+                _k = pad(k, pad_param)
+                _v = pad(v, pad_param)
+                padding_target.key_cache[idx] = _k
+                padding_target.value_cache[idx] = _v
+
+        ret_kv = DynamicCache()
+        for idx in range(len(past_cache)):
+            k1, k2 = new_cache.key_cache[idx], past_cache.key_cache[idx]
+            v1, v2 = new_cache.value_cache[idx], past_cache.value_cache[idx]
+            ret_kv.update(
+                torch.cat((k1, k2), 0).contiguous(),
+                torch.cat((v1, v2), 0).contiguous(),
+                idx,
+            )
+        return ret_kv
+
     def prepare_batch_inference(self, req_list: List[InferenceRequest]):
         # check some parameters
         for r in req_list:
@@ -655,14 +651,22 @@ class PytorchModel(LLM):
         )
         self.handle_batch_inference_results(req_list)
 
+    def build_reduced_kv_cache(self, cache, skipped_indexes: Set[int]):
+        batch_size = cache.key_cache[0].shape[0]
+        batch_slices = [num for num in range(batch_size) if num not in skipped_indexes]
+        for idx in range(len(cache)):
+            cache.key_cache[idx] = cache.key_cache[idx][batch_slices, ::].contiguous()
+            cache.value_cache[idx] = cache.value_cache[idx][
+                batch_slices, ::
+            ].contiguous()
+        return cache
+
 
 class PytorchChatModel(PytorchModel, ChatModelMixin):
     def __init__(
         self,
         model_uid: str,
-        model_family: "LLMFamilyV1",
-        model_spec: "LLMSpecV1",
-        quantization: str,
+        model_family: "LLMFamilyV2",
         model_path: str,
         pytorch_model_config: Optional[PytorchModelConfig] = None,
         peft_model: Optional[List[LoRA]] = None,
@@ -670,8 +674,6 @@ class PytorchChatModel(PytorchModel, ChatModelMixin):
         super().__init__(
             model_uid,
             model_family,
-            model_spec,
-            quantization,
             model_path,
             pytorch_model_config,
             peft_model,
@@ -694,7 +696,7 @@ class PytorchChatModel(PytorchModel, ChatModelMixin):
 
     @classmethod
     def match_json(
-        cls, llm_family: "LLMFamilyV1", llm_spec: "LLMSpecV1", quantization: str
+        cls, llm_family: "LLMFamilyV2", llm_spec: "LLMSpecV1", quantization: str
     ) -> bool:
         if llm_spec.model_format not in ["pytorch", "gptq", "awq"]:
             return False
@@ -715,9 +717,16 @@ class PytorchChatModel(PytorchModel, ChatModelMixin):
     def load(self):
         super().load()
 
-    def _get_full_prompt(self, messages: List[Dict], tools):
+    def _get_full_prompt(self, messages: List[Dict], tools, generate_config: dict):
         model_family = self.model_family.model_family or self.model_family.model_name
-        full_context_kwargs = {}
+        chat_template_kwargs = (
+            self._get_chat_template_kwargs_from_generate_config(
+                generate_config, self.reasoning_parser
+            )
+            or {}
+        )
+        chat_context_var.set(chat_template_kwargs)
+        full_context_kwargs = chat_template_kwargs.copy()
         if (
             tools
             and model_family in QWEN_TOOL_CALL_FAMILY
@@ -740,7 +749,9 @@ class PytorchChatModel(PytorchModel, ChatModelMixin):
             try:
                 if not r.stopped and r.is_prefill:
                     tools = r.generate_config.get("tools", None)
-                    r.full_prompt = self._get_full_prompt(r.prompt, tools)
+                    r.full_prompt = self._get_full_prompt(
+                        r.prompt, tools, r.generate_config
+                    )
                     if tools:
                         r.tools = tools
             except Exception as e:
@@ -765,7 +776,7 @@ class PytorchChatModel(PytorchModel, ChatModelMixin):
         results = []
         for i, c in enumerate(req.completion):
             if c == "<bos_stream>":
-                results.append(
+                results.extend(
                     self._get_first_chat_completion_chunk(
                         req.completion[i + 1], self.reasoning_parser
                     )
